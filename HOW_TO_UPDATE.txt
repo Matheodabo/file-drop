@@ -1,0 +1,30 @@
+HOW TO ADD A NEW FILE
+=====================
+
+1. Drop your file into the  /files/  folder.
+   - Code files should have a .txt extension (rename to .py / .html etc. after download)
+   - PDFs go in as-is.
+
+2. Open  files.json  in any text editor and add an entry:
+
+   {
+     "name": "your_filename.txt",          <- exact filename in /files/
+     "label": "Friendly display name",
+     "description": "Short note for yourself",
+     "date": "2026-04-09"
+   }
+
+   Add a comma after the previous entry, before yours.
+
+3. Re-deploy to Netlify (drag the whole FileShare folder onto the Netlify dashboard).
+   The site updates in ~10 seconds.
+
+HOSTING ON NETLIFY (FREE)
+==========================
+1. Go to https://app.netlify.com  -> sign up free with email
+2. Click "Add new site" -> "Deploy manually"
+3. Drag the entire FileShare folder onto the upload box
+4. Netlify gives you a URL like  https://random-name.netlify.app
+5. Optional: rename the site in Site Settings -> Site name
+
+Each time you add files, just drag the folder again — it redeploys.

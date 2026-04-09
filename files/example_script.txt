@@ -1,0 +1,2 @@
+# Example — rename this file to example_script.py after downloading
+print("Hello from Claude!")
