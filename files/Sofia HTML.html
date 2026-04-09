@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>After-Tax Return Analysis — ETF vs Direct Indexing vs Active ETF</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+–bg: #080e1a;
+–bg2: #0d1829;
+–bg3: #0a1220;
+–border: #1e2d3d;
+–border2: #0f1e2e;
+–blue: #3b82f6;
+–blue-dim: #1d3a6e;
+–blue-light: #93c5fd;
+–slate: #94a3b8;
+–slate-dim: #64748b;
+–slate-dark: #475569;
+–slate-darker: #334155;
+–text: #e2e8f0;
+–text-bright: #f1f5f9;
+–green: #10b981;
+–amber: #f59e0b;
+–red: #ef4444;
+–mono: ‘DM Mono’, ‘Courier New’, monospace;
+–sans: ‘DM Sans’, system-ui, sans-serif;
+}
+
+html, body { background: var(–bg); color: var(–text); font-family: var(–mono); min-height: 100vh; }
+
+/* HEADER */
+.header {
+border-bottom: 1px solid var(–border);
+padding: 28px 40px 24px;
+background: linear-gradient(180deg, #0d1829 0%, #080e1a 100%);
+display: flex;
+align-items: flex-end;
+justify-content: space-between;
+flex-wrap: wrap;
+gap: 12px;
+}
+.header-eyebrow { font-size: 11px; letter-spacing: 0.2em; color: var(–blue); text-transform: uppercase; margin-bottom: 6px; }
+.header h1 { font-size: 24px; font-weight: 700; color: var(–text-bright); letter-spacing: -0.02em; font-family: var(–sans); }
+.header-sub { font-size: 12px; color: var(–slate-dim); margin-top: 4px; }
+.header-fees { font-size: 11px; color: var(–slate-dark); text-align: right; line-height: 1.8; }
+
+/* CONTROLS */
+.controls {
+padding: 20px 40px;
+background: var(–bg2);
+border-bottom: 1px solid var(–border);
+display: flex;
+gap: 32px;
+flex-wrap: wrap;
+align-items: center;
+}
+.control-group { display: flex; flex-direction: column; gap: 8px; }
+.control-label { font-size: 10px; letter-spacing: 0.15em; color: var(–slate-dark); text-transform: uppercase; }
+.btn-group { display: flex; gap: 4px; flex-wrap: wrap; }
+button {
+padding: 6px 14px;
+border-radius: 4px;
+border: 1px solid var(–border);
+background: transparent;
+color: var(–slate-dim);
+font-size: 12px;
+cursor: pointer;
+font-family: var(–mono);
+transition: all 0.15s;
+}
+button:hover { border-color: var(–blue); color: var(–blue-light); }
+button.active { border-color: var(–blue); background: var(–blue-dim); color: var(–blue-light); }
+button.active-green { border-color: var(–green); background: #064e3b; color: #6ee7b7; }
+
+/* TAX SUMMARY BAR */
+.tax-bar {
+padding: 10px 40px;
+background: var(–bg3);
+border-bottom: 1px solid var(–border);
+font-size: 11px;
+color: var(–slate-dark);
+display: flex;
+gap: 32px;
+flex-wrap: wrap;
+align-items: center;
+}
+.tax-bar strong { color: var(–slate); }
+.tax-bar .scenario-label { margin-left: auto; color: var(–slate-dim); }
+.tax-bar .scenario-label strong { color: var(–blue-light); }
+
+/* TABS */
+.tabs { padding: 0 40px; border-bottom: 1px solid var(–border); display: flex; gap: 0; }
+.tab-btn {
+padding: 14px 20px;
+border: none;
+border-bottom: 2px solid transparent;
+background: transparent;
+color: var(–slate-dark);
+font-size: 12px;
+cursor: pointer;
+font-family: var(–mono);
+letter-spacing: 0.05em;
+border-radius: 0;
+}
+.tab-btn:hover { color: var(–slate); border-bottom-color: var(–slate-darker); }
+.tab-btn.active { color: var(–blue-light); border-bottom-color: var(–blue); }
+
+/* CONTENT */
+.content { padding: 32px 40px; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* CHART CONTAINER */
+.chart-wrap { position: relative; height: 380px; margin-bottom: 32px; }
+.chart-subtitle { font-size: 13px; color: var(–slate-dim); margin-bottom: 16px; }
+
+/* CARDS */
+.card-grid-3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; margin-top: 32px; }
+.card-grid-2 { display: grid; grid-template-columns: repeat(2,1fr); gap: 16px; margin-top: 32px; }
+.card {
+background: var(–bg2);
+border: 1px solid var(–border);
+border-radius: 8px;
+padding: 20px 24px;
+}
+.card-full { grid-column: 1 / -1; }
+.card-title { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 12px; }
+.card-title.blue { color: var(–blue); }
+.card-title.amber { color: var(–amber); }
+.card-title.green { color: var(–green); }
+.card-body { font-size: 12px; color: var(–slate); line-height: 1.8; }
+.card-body div span.label { color: var(–slate-dark); }
+.card-body div strong { color: var(–text-bright); }
+.card-note { margin-top: 16px; padding: 12px 16px; background: var(–bg3); border-radius: 6px; font-size: 11px; color: var(–slate-dim); line-height: 1.7; }
+
+/* WEALTH SNAPSHOT */
+.snapshot-card {
+background: var(–bg2);
+border-radius: 8px;
+padding: 20px 24px;
+}
+.snapshot-title { font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 12px; }
+.snapshot-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; }
+.snapshot-item .lbl { font-size: 10px; color: var(–slate-dark); margin-bottom: 2px; }
+.snapshot-item .val { font-size: 15px; font-weight: 700; color: var(–text-bright); }
+
+/* TABLE */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+thead tr { border-bottom: 1px solid var(–border); }
+th { padding: 10px 16px; text-align: left; color: var(–slate-dark); font-weight: 500; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
+tbody tr { border-bottom: 1px solid var(–border2); }
+td { padding: 14px 16px; }
+.td-strategy { color: var(–text); font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.td-slate { color: var(–slate); }
+.td-red { color: var(–red); }
+.td-bright { color: var(–text-bright); font-weight: 700; }
+.td-green { color: var(–green); font-weight: 700; }
+.td-pos { color: var(–green); font-weight: 700; }
+.td-neg { color: var(–red); font-weight: 700; }
+.td-dim { color: var(–slate-darker); }
+
+/* EXCESS SURVIVAL CARDS */
+.survival-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; margin-top: 32px; }
+.survival-card { background: var(–bg2); border: 1px solid var(–border); border-radius: 8px; padding: 16px 20px; }
+.survival-label { font-size: 10px; color: var(–slate-dark); margin-bottom: 8px; letter-spacing: 0.1em; text-transform: uppercase; }
+.survival-val { font-size: 22px; font-weight: 700; }
+.survival-sub { font-size: 11px; color: var(–slate-dark); margin-top: 4px; }
+.survival-warn { font-size: 10px; color: var(–amber); margin-top: 8px; line-height: 1.5; }
+
+/* NEXT STEPS GRID */
+.next-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; font-size: 12px; color: var(–slate); line-height: 1.8; }
+.next-grid .step-title { color: var(–text-bright); font-weight: 600; margin-bottom: 6px; }
+
+/* FOOTER */
+.footer { padding: 16px 40px; border-top: 1px solid var(–border); font-size: 10px; color: var(–slate-darker); line-height: 1.7; }
+
+@media (max-width: 700px) {
+.header, .controls, .tax-bar, .content, .tabs { padding-left: 16px; padding-right: 16px; }
+.card-grid-3, .card-grid-2, .survival-grid, .next-grid { grid-template-columns: 1fr; }
+.card-full { grid-column: 1; }
+.header { flex-direction: column; align-items: flex-start; }
+.header-fees { text-align: left; }
+.tax-bar .scenario-label { margin-left: 0; }
+}
+</style>
+
+</head>
+<body>
+
+<!-- HEADER -->
+
+<div class="header">
+  <div>
+    <div class="header-eyebrow">Morgan Stanley · Parametric · After-Tax Return Analysis</div>
+    <h1>ETF vs. Direct Indexing vs. Active ETF</h1>
+    <div class="header-sub">$250M Hypothetical Allocation · Federal + Colorado State Tax · Parametric Custom Core S&amp;P 500</div>
+  </div>
+  <div class="header-fees">
+    <div>Parametric SMA fee: ~0.25% (negotiated at scale)</div>
+    <div>MS Advisory wrap: ~0.50%</div>
+    <div>ETF expense ratio: 0.03%</div>
+    <div>Active ETF fee: 0.45%</div>
+  </div>
+</div>
+
+<!-- CONTROLS -->
+
+<div class="controls">
+  <div class="control-group">
+    <div class="control-label">Tax Profile</div>
+    <div class="btn-group">
+      <button class="active" id="btn-ltcg" onclick="setTaxProfile('ltcg')">LTCG (20% + 3.8% NIIT)</button>
+      <button id="btn-stcg" onclick="setTaxProfile('stcg')">STCG (37% + 3.8% NIIT)</button>
+    </div>
+  </div>
+  <div class="control-group">
+    <div class="control-label">Terminal Scenario</div>
+    <div class="btn-group">
+      <button id="btn-hold" onclick="setTerminal('hold')">Hold (No Liquidation)</button>
+      <button class="active" id="btn-holdDeath" onclick="setTerminal('holdDeath')">Hold Until Death (Step-Up)</button>
+      <button id="btn-liquidate" onclick="setTerminal('liquidate')">Full Liquidation</button>
+    </div>
+  </div>
+  <div class="control-group">
+    <div class="control-label">Colorado State Tax</div>
+    <div class="btn-group">
+      <button class="active-green" id="btn-state" onclick="toggleState()">✓ CO 4.40% Included</button>
+    </div>
+  </div>
+</div>
+
+<!-- TAX SUMMARY BAR -->
+
+<div class="tax-bar">
+  <span>Federal: <strong id="bar-federal"></strong></span>
+  <span id="bar-state-span">Colorado: <strong>4.40%</strong></span>
+  <span>All-In Rate: <strong id="bar-allin"></strong></span>
+  <span class="scenario-label">Scenario: <strong id="bar-scenario"></strong> <span id="bar-stepup"></span></span>
+</div>
+
+<!-- TABS -->
+
+<div class="tabs">
+  <button class="tab-btn active" onclick="setTab('wealth')">Cumulative Wealth</button>
+  <button class="tab-btn" onclick="setTab('excess')">After-Tax Excess Return</button>
+  <button class="tab-btn" onclick="setTab('metrics')">Return Metrics Table</button>
+  <button class="tab-btn" onclick="setTab('notes')">MS / Parametric Offering Notes</button>
+</div>
+
+<!-- CONTENT -->
+
+<div class="content">
+
+  <!-- TAB: WEALTH -->
+
+  <div class="tab-panel active" id="panel-wealth">
+    <div class="chart-subtitle">Hypothetical $250M starting allocation · Terminal tax applied per scenario</div>
+    <div class="chart-wrap"><canvas id="wealthChart"></canvas></div>
+    <div class="card-grid-3" id="snapshot-cards"></div>
+  </div>
+
+  <!-- TAB: EXCESS -->
+
+  <div class="tab-panel" id="panel-excess">
+    <div class="chart-subtitle">After-tax cumulative dollar excess vs. Passive ETF baseline ($250M starting allocation)</div>
+    <div class="chart-wrap"><canvas id="excessChart"></canvas></div>
+    <div>
+      <div style="font-size:12px;color:var(--slate-dim);margin-bottom:16px;letter-spacing:0.05em;">TAX ALPHA SURVIVAL — Direct Indexing Excess vs. ETF at Year 30 ($250M starting)</div>
+      <div class="survival-grid" id="survival-cards"></div>
+    </div>
+  </div>
+
+  <!-- TAB: METRICS -->
+
+  <div class="tab-panel" id="panel-metrics">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Strategy</th><th>Gross Return</th><th>Total Fee</th><th>Net Pre-Tax</th>
+            <th>Tax Alpha</th><th>After-Tax Return</th><th>vs. ETF Baseline</th><th>30yr Wealth</th>
+          </tr>
+        </thead>
+        <tbody id="metrics-tbody"></tbody>
+      </table>
+    </div>
+    <div class="card-grid-2" style="margin-top:32px;">
+      <div class="card">
+        <div class="card-title blue">Colorado Tax Context</div>
+        <div class="card-body">
+          <div><span class="label">State flat rate: </span><strong>4.40%</strong></div>
+          <div><span class="label">LTCG all-in (federal + CO): </span><strong>28.2%</strong></div>
+          <div><span class="label">STCG all-in (federal + CO): </span><strong>44.8%</strong></div>
+          <div style="margin-top:8px;color:var(--slate-dim);font-size:11px;">State tax increases all-in drag but also increases DI tax alpha benefit — net effect slightly positive for DI at LTCG rates.</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title amber">Hold-Until-Death / Short Position Liability</div>
+        <div class="card-body">
+          <div><span class="label">Step-up in basis: </span><strong style="color:var(--green);">eliminates most embedded gains</strong></div>
+          <div><span class="label">DI short positions: </span><strong style="color:var(--red);">do NOT receive step-up</strong></div>
+          <div><span class="label">Estimated terminal short liability: </span><strong>~15% of AUM</strong></div>
+          <div style="margin-top:8px;color:var(--slate-dim);font-size:11px;">Heirs inherit this liability. Quantified separately in the excess return panel above.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB: NOTES -->
+
+  <div class="tab-panel" id="panel-notes">
+    <div class="card-grid-2">
+      <div class="card">
+        <div class="card-title blue">MS / Parametric — S&amp;P 500 Direct Index (PPA-7)</div>
+        <div class="card-body">
+          <div><span class="label">Manager: </span><strong>Parametric Portfolio Associates (MSIM subsidiary)</strong></div>
+          <div><span class="label">Strategy Min: </span><strong>$100,000 (published); negotiable at $250M</strong></div>
+          <div><span class="label">Benchmark: </span><strong>S&amp;P 500® Index</strong></div>
+          <div><span class="label">Parametric SMA Fee: </span><strong>0–0.75% (typically ~0.25–0.40% at scale)</strong></div>
+          <div><span class="label">MS Advisory Wrap: </span><strong>Up to 2.0% annually (Select UMA); often ~0.50% for large accounts</strong></div>
+          <div><span class="label">Program: </span><strong>Select UMA (SMA sleeve within unified account)</strong></div>
+          <div><span class="label">Tax Method: </span><strong>Daily TLH, highest federal marginal rates (CO addable)</strong></div>
+          <div><span class="label">AUM (composite): </span><strong>$16.6B (12/31/2025)</strong></div>
+          <div><span class="label">Inception: </span><strong>November 1998</strong></div>
+        </div>
+        <div class="card-note">Note: MS does not publicly list a Nasdaq-100 direct indexing SMA equivalent to PPA-7 at this time. For Nasdaq-100 exposure, ask your FA about custom benchmark variants or the Parametric Equity Plus ETF. Confirm availability with your MS team directly.</div>
+      </div>
+      <div class="card">
+        <div class="card-title amber">Analysis Assumptions &amp; Sensitivities</div>
+        <div class="card-body">
+          <div><span class="label">Gross equity return: </span><strong>9.7% (historical S&amp;P 500 LT avg)</strong></div>
+          <div><span class="label">Active ETF gross alpha: </span><strong>+0.6% above index</strong></div>
+          <div><span class="label">DI tax alpha (LTCG): </span><strong>~1.1% net (fed + CO)</strong></div>
+          <div><span class="label">DI tax alpha (STCG): </span><strong>~1.8% net (fed + CO)</strong></div>
+          <div><span class="label">ETF annual gain realization: </span><strong>0.5% of AUM</strong></div>
+          <div><span class="label">Active ETF gain realization: </span><strong>4.0% of AUM</strong></div>
+          <div><span class="label">Short position terminal liability: </span><strong>~15% of DI AUM</strong></div>
+        </div>
+        <div class="card-note">These are illustrative assumptions for planning purposes. The MS/Parametric team can run their proprietary after-tax backtest with client-specific tax basis, state, and scenario inputs. Request the Parametric Custom Core S&P 500 after-tax performance report (PPA-7) for live composite data.</div>
+      </div>
+      <div class="card card-full">
+        <div class="card-title green">Next Steps to Request from MS Team</div>
+        <div class="next-grid">
+          <div>
+            <div class="step-title">1. Proprietary Backtests</div>
+            Ask for the Parametric after-tax performance composite (PPA-7) including net-of-all-fees returns, annual tax alpha, and after-tax alpha vs. S&amp;P 500 passive ETF — with Colorado state tax layered in.
+          </div>
+          <div>
+            <div class="step-title">2. Liquidation Sensitivity</div>
+            Request the "optionality cost analysis" showing cumulative tax alpha survival at 5, 10, 15, 20yr liquidation horizons vs. hold-until-death, including embedded gain schedules.
+          </div>
+          <div>
+            <div class="step-title">3. Short Position Liability Schedule</div>
+            Request a forward projection of the embedded short position tax liability that does not benefit from step-up, broken out separately from the long-side gain analysis.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- FOOTER -->
+
+<div class="footer">
+  ILLUSTRATIVE PURPOSES ONLY. Not investment advice. Returns are hypothetical and do not represent actual performance. Tax rates reflect 2024–2025 federal top brackets (LTCG: 20% + 3.8% NIIT; STCG: 37% + 3.8% NIIT) and Colorado flat rate of 4.40%. Actual fees, tax alpha, and outcomes will vary. Consult your Morgan Stanley advisor and tax counsel.
+</div>
+
+<script>
+// ─── STATE ────────────────────────────────────────────────────────────────────
+let state = {
+  taxProfile: 'ltcg',
+  terminal: 'holdDeath',
+  stateTax: true,
+};
+
+const HORIZONS = [5, 10, 15, 20, 25, 30];
+const INITIAL_AUM = 250_000_000;
+
+const TAX_PROFILES = {
+  ltcg: { label: 'Long-Term Gain Payer', federal: 0.238, state: 0.044, combined: 0.282 },
+  stcg: { label: 'Short-Term Gain Payer', federal: 0.408, state: 0.044, combined: 0.452 },
+};
+
+const STRATEGIES = {
+  etf: {
+    label: 'Passive Index ETF', color: '#94a3b8',
+    grossReturn: 0.097, fee: 0.0003, msFee: 0,
+    annualTaxableGainRate: 0.005, taxAlphaLTCG: 0, taxAlphaSTCG: 0,
+    shortPositionEmbeddedLiabilityPct: 0,
+  },
+  directIndex: {
+    label: 'Direct Indexing (Parametric/MS)', color: '#3b82f6',
+    grossReturn: 0.097, fee: 0.0025, msFee: 0.005,
+    annualTaxableGainRate: 0.0, taxAlphaLTCG: 0.011, taxAlphaSTCG: 0.018,
+    shortPositionEmbeddedLiabilityPct: 0.15,
+  },
+  activeEtf: {
+    label: 'Active ETF', color: '#f59e0b',
+    grossReturn: 0.103, fee: 0.0045, msFee: 0,
+    annualTaxableGainRate: 0.04, taxAlphaLTCG: 0, taxAlphaSTCG: 0,
+    shortPositionEmbeddedLiabilityPct: 0,
+  },
+};
+
+const TERMINAL_LABELS = {
+  hold: 'Hold (No Liquidation)',
+  holdDeath: 'Hold Until Death (Step-Up)',
+  liquidate: 'Full Liquidation',
+};
+
+// ─── ENGINE ───────────────────────────────────────────────────────────────────
+function computeWealth(stratKey, taxProfile, horizon, terminal, stateTax) {
+  const s = STRATEGIES[stratKey];
+  const tp = TAX_PROFILES[taxProfile];
+  const taxRate = stateTax ? tp.combined : tp.federal;
+  const fee = s.fee + s.msFee;
+  const netFeeReturn = s.grossReturn - fee;
+  const taxAlpha = stratKey === 'directIndex'
+    ? (taxProfile === 'ltcg' ? s.taxAlphaLTCG : s.taxAlphaSTCG)
+    : 0;
+  const annualTaxDrag = s.annualTaxableGainRate * taxRate;
+  const afterTaxReturn = netFeeReturn - annualTaxDrag + taxAlpha;
+
+  let wealth = INITIAL_AUM;
+  for (let y = 0; y < horizon; y++) wealth *= 1 + afterTaxReturn;
+
+  if (terminal === 'liquidate') {
+    const gain = wealth - INITIAL_AUM;
+    wealth -= gain * taxRate;
+  } else if (terminal === 'holdDeath' && stratKey === 'directIndex') {
+    const embedded = wealth * s.shortPositionEmbeddedLiabilityPct;
+    wealth -= embedded * taxRate;
+  }
+  return wealth;
+}
+
+function fmtB(v) { return '$' + (v / 1e9).toFixed(2) + 'B'; }
+function fmtM(v) { return '$' + (v / 1e6).toFixed(1) + 'M'; }
+function pct(v, digits=2) { return (v * 100).toFixed(digits) + '%'; }
+function signPct(v, digits=2) { return (v >= 0 ? '+' : '') + pct(v, digits); }
+
+// ─── CHARTS ───────────────────────────────────────────────────────────────────
+let wealthChart, excessChart;
+
+function getChartDefaults() {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        labels: { color: '#94a3b8', font: { family: "'DM Mono', monospace", size: 12 }, boxWidth: 14, padding: 20 }
+      },
+      tooltip: {
+        backgroundColor: '#0f172a',
+        borderColor: '#334155',
+        borderWidth: 1,
+        titleColor: '#94a3b8',
+        bodyColor: '#e2e8f0',
+        titleFont: { family: "'DM Mono', monospace", size: 11 },
+        bodyFont: { family: "'DM Mono', monospace", size: 12 },
+        padding: 12,
+      }
+    },
+    scales: {
+      x: {
+        ticks: { color: '#64748b', font: { family: "'DM Mono', monospace", size: 11 } },
+        grid: { color: '#1e2d3d' },
+        border: { color: '#334155' },
+      },
+      y: {
+        ticks: { color: '#64748b', font: { family: "'DM Mono', monospace", size: 11 } },
+        grid: { color: '#1e2d3d' },
+        border: { color: '#334155' },
+      }
+    }
+  };
+}
+
+function buildWealthChart() {
+  const labels = HORIZONS.map(h => 'Yr ' + h);
+  const etfData = HORIZONS.map(h => computeWealth('etf', state.taxProfile, h, state.terminal, state.stateTax));
+  const diData  = HORIZONS.map(h => computeWealth('directIndex', state.taxProfile, h, state.terminal, state.stateTax));
+  const aeData  = HORIZONS.map(h => computeWealth('activeEtf', state.taxProfile, h, state.terminal, state.stateTax));
+
+  const ctx = document.getElementById('wealthChart').getContext('2d');
+  if (wealthChart) wealthChart.destroy();
+
+  const defaults = getChartDefaults();
+  defaults.plugins.tooltip.callbacks = {
+    title: (items) => items[0].label,
+    label: (item) => ' ' + item.dataset.label + ': ' + fmtB(item.raw),
+  };
+  defaults.scales.y.ticks.callback = (v) => '$' + (v / 1e9).toFixed(1) + 'B';
+
+  wealthChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'ETF', data: etfData, borderColor: '#94a3b8', backgroundColor: '#94a3b820', pointRadius: 5, pointHoverRadius: 7, borderWidth: 2, tension: 0.3 },
+        { label: 'Direct Index', data: diData, borderColor: '#3b82f6', backgroundColor: '#3b82f620', pointRadius: 6, pointHoverRadius: 8, borderWidth: 3, tension: 0.3 },
+        { label: 'Active ETF', data: aeData, borderColor: '#f59e0b', backgroundColor: '#f59e0b20', pointRadius: 5, pointHoverRadius: 7, borderWidth: 2, tension: 0.3 },
+      ]
+    },
+    options: defaults,
+  });
+}
+
+function buildExcessChart() {
+  const labels = HORIZONS.map(h => 'Yr ' + h);
+  const diExcess = HORIZONS.map(h => {
+    const di = computeWealth('directIndex', state.taxProfile, h, state.terminal, state.stateTax);
+    const etf = computeWealth('etf', state.taxProfile, h, state.terminal, state.stateTax);
+    return di - etf;
+  });
+  const aeExcess = HORIZONS.map(h => {
+    const ae = computeWealth('activeEtf', state.taxProfile, h, state.terminal, state.stateTax);
+    const etf = computeWealth('etf', state.taxProfile, h, state.terminal, state.stateTax);
+    return ae - etf;
+  });
+
+  const ctx = document.getElementById('excessChart').getContext('2d');
+  if (excessChart) excessChart.destroy();
+
+  const defaults = getChartDefaults();
+  defaults.plugins.tooltip.callbacks = {
+    title: (items) => items[0].label,
+    label: (item) => ' ' + item.dataset.label + ': ' + fmtM(item.raw),
+  };
+  defaults.scales.y.ticks.callback = (v) => '$' + (v / 1e6).toFixed(0) + 'M';
+
+  excessChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Direct Index vs ETF', data: diExcess, backgroundColor: '#3b82f6cc', borderRadius: 4 },
+        { label: 'Active ETF vs ETF',   data: aeExcess, backgroundColor: '#f59e0bcc', borderRadius: 4 },
+      ]
+    },
+    options: defaults,
+  });
+}
+
+// ─── RENDER HELPERS ───────────────────────────────────────────────────────────
+function renderSnapshotCards() {
+  const container = document.getElementById('snapshot-cards');
+  container.innerHTML = '';
+  const keys = Object.keys(STRATEGIES);
+  const horizons = [10, 20, 30];
+  keys.forEach(k => {
+    const s = STRATEGIES[k];
+    const card = document.createElement('div');
+    card.className = 'snapshot-card';
+    card.style.border = `1px solid ${s.color}33`;
+    let inner = `<div class="snapshot-title" style="color:${s.color}">${s.label}</div><div class="snapshot-grid">`;
+    horizons.forEach(h => {
+      const w = computeWealth(k, state.taxProfile, h, state.terminal, state.stateTax);
+      inner += `<div class="snapshot-item"><div class="lbl">${h}yr</div><div class="val">${fmtB(w)}</div></div>`;
+    });
+    inner += '</div>';
+    card.innerHTML = inner;
+    container.appendChild(card);
+  });
+}
+
+function renderMetricsTable() {
+  const tp = TAX_PROFILES[state.taxProfile];
+  const taxRate = state.stateTax ? tp.combined : tp.federal;
+  const tbody = document.getElementById('metrics-tbody');
+  tbody.innerHTML = '';
+
+  const etfAfterTax = STRATEGIES.etf.grossReturn - STRATEGIES.etf.fee
+    - STRATEGIES.etf.annualTaxableGainRate * taxRate;
+
+  Object.entries(STRATEGIES).forEach(([k, s]) => {
+    const fee = s.fee + s.msFee;
+    const netFee = s.grossReturn - fee;
+    const drag = s.annualTaxableGainRate * taxRate;
+    const alpha = k === 'directIndex'
+      ? (state.taxProfile === 'ltcg' ? s.taxAlphaLTCG : s.taxAlphaSTCG) : 0;
+    const afterTax = netFee - drag + alpha;
+    const excess = afterTax - etfAfterTax;
+    const w30 = computeWealth(k, state.taxProfile, 30, state.terminal, state.stateTax);
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><div class="td-strategy"><span class="dot" style="background:${s.color}"></span>${s.label}</div></td>
+      <td class="td-slate">${pct(s.grossReturn)}</td>
+      <td class="td-red">${pct(fee)}</td>
+      <td class="td-slate">${pct(netFee)}</td>
+      <td class="${alpha > 0 ? 'td-green' : 'td-dim'}">${alpha > 0 ? '+' + pct(alpha) : '—'}</td>
+      <td class="td-bright">${pct(afterTax)}</td>
+      <td class="${excess >= 0 ? 'td-pos' : 'td-neg'}">${signPct(excess)}</td>
+      <td class="td-bright">${fmtB(w30)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function renderSurvivalCards() {
+  const container = document.getElementById('survival-cards');
+  container.innerHTML = '';
+  Object.entries(TERMINAL_LABELS).forEach(([ts, label]) => {
+    const di = computeWealth('directIndex', state.taxProfile, 30, ts, state.stateTax);
+    const etf = computeWealth('etf', state.taxProfile, 30, ts, state.stateTax);
+    const excess = di - etf;
+    const card = document.createElement('div');
+    card.className = 'survival-card';
+    card.innerHTML = `
+      <div class="survival-label">${label}</div>
+      <div class="survival-val" style="color:${excess >= 0 ? 'var(--blue)' : 'var(--red)'}">${fmtM(excess)}</div>
+      <div class="survival-sub">DI excess vs. ETF (30yr, ${state.taxProfile.toUpperCase()})</div>
+      ${ts === 'holdDeath' ? '<div class="survival-warn">⚠ Embedded short position tax liability not stepped-up (~15% of DI AUM at terminal)</div>' : ''}
+    `;
+    container.appendChild(card);
+  });
+}
+
+function renderTaxBar() {
+  const tp = TAX_PROFILES[state.taxProfile];
+  const taxRate = state.stateTax ? tp.combined : tp.federal;
+  document.getElementById('bar-federal').textContent = pct(tp.federal);
+  document.getElementById('bar-state-span').style.display = state.stateTax ? '' : 'none';
+  document.getElementById('bar-allin').textContent = pct(taxRate);
+  document.getElementById('bar-scenario').textContent = TERMINAL_LABELS[state.terminal];
+  document.getElementById('bar-stepup').textContent = state.terminal === 'holdDeath'
+    ? '· Step-up in basis applied (except DI short positions)' : '';
+}
+
+// ─── FULL RENDER ─────────────────────────────────────────────────────────────
+function render() {
+  renderTaxBar();
+  buildWealthChart();
+  buildExcessChart();
+  renderSnapshotCards();
+  renderMetricsTable();
+  renderSurvivalCards();
+}
+
+// ─── CONTROLS ─────────────────────────────────────────────────────────────────
+function setTaxProfile(p) {
+  state.taxProfile = p;
+  document.getElementById('btn-ltcg').className = p === 'ltcg' ? 'active' : '';
+  document.getElementById('btn-stcg').className = p === 'stcg' ? 'active' : '';
+  render();
+}
+
+function setTerminal(t) {
+  state.terminal = t;
+  ['hold','holdDeath','liquidate'].forEach(k => {
+    document.getElementById('btn-' + k).className = k === t ? 'active' : '';
+  });
+  render();
+}
+
+function toggleState() {
+  state.stateTax = !state.stateTax;
+  const btn = document.getElementById('btn-state');
+  btn.className = state.stateTax ? 'active-green' : '';
+  btn.textContent = state.stateTax ? '✓ CO 4.40% Included' : 'Federal Only';
+  render();
+}
+
+// ─── TABS ─────────────────────────────────────────────────────────────────────
+const TAB_IDS = ['wealth','excess','metrics','notes'];
+function setTab(id) {
+  TAB_IDS.forEach(t => {
+    document.getElementById('panel-' + t).className = 'tab-panel' + (t === id ? ' active' : '');
+  });
+  document.querySelectorAll('.tab-btn').forEach((btn, i) => {
+    btn.className = 'tab-btn' + (TAB_IDS[i] === id ? ' active' : '');
+  });
+}
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+render();
+</script>
+
+</body>
+</html>
