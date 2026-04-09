@@ -2,29 +2,51 @@ HOW TO ADD A NEW FILE
 =====================
 
 1. Drop your file into the  /files/  folder.
-   - Code files should have a .txt extension (rename to .py / .html etc. after download)
-   - PDFs go in as-is.
+   - Code files: use .txt extension (rename to .py / .html etc. after downloading at work)
+   - PDFs: add as-is
 
-2. Open  files.json  in any text editor and add an entry:
+2. Open  files.json  in any text editor and add an entry like this:
 
    {
-     "name": "your_filename.txt",          <- exact filename in /files/
+     "name": "your_filename.txt",
      "label": "Friendly display name",
-     "description": "Short note for yourself",
+     "description": "Short note (e.g. 'rename to .py after download')",
      "date": "2026-04-09"
    }
 
-   Add a comma after the previous entry, before yours.
+   Add a comma after the previous entry, then paste yours.
 
-3. Re-deploy to Netlify (drag the whole FileShare folder onto the Netlify dashboard).
-   The site updates in ~10 seconds.
+3. In Terminal, run:
 
-HOSTING ON NETLIFY (FREE)
-==========================
-1. Go to https://app.netlify.com  -> sign up free with email
-2. Click "Add new site" -> "Deploy manually"
-3. Drag the entire FileShare folder onto the upload box
-4. Netlify gives you a URL like  https://random-name.netlify.app
-5. Optional: rename the site in Site Settings -> Site name
+     cd ~/Desktop/FileShare
+     git add .
+     git commit -m "Add new file"
+     git push
 
-Each time you add files, just drag the folder again — it redeploys.
+   The site updates on GitHub Pages within ~30 seconds.
+
+==============================================================
+FIRST-TIME GITHUB PAGES SETUP
+==============================================================
+
+1. Go to https://github.com  ->  Sign in (or create a free account)
+2. Click the + icon (top right)  ->  "New repository"
+3. Name it:  file-drop  (or anything you like)
+4. Set it to PUBLIC (required for free GitHub Pages)
+5. Do NOT initialize with README (you already have files)
+6. Click "Create repository"
+7. GitHub shows you commands. In Terminal run:
+
+     cd ~/Desktop/FileShare
+     git remote add origin https://github.com/YOUR_USERNAME/file-drop.git
+     git push -u origin main
+
+8. In the repo on GitHub, go to:
+     Settings -> Pages -> Source -> "Deploy from a branch"
+     Branch: main  /  Folder: / (root)  ->  Save
+
+9. Your live URL will be:
+     https://YOUR_USERNAME.github.io/file-drop/
+
+   It takes ~1 minute to go live the first time.
+==============================================================
