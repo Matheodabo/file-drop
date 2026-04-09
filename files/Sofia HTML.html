@@ -12,32 +12,32 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-–bg: #080e1a;
-–bg2: #0d1829;
-–bg3: #0a1220;
-–border: #1e2d3d;
-–border2: #0f1e2e;
-–blue: #3b82f6;
-–blue-dim: #1d3a6e;
-–blue-light: #93c5fd;
-–slate: #94a3b8;
-–slate-dim: #64748b;
-–slate-dark: #475569;
-–slate-darker: #334155;
-–text: #e2e8f0;
-–text-bright: #f1f5f9;
-–green: #10b981;
-–amber: #f59e0b;
-–red: #ef4444;
-–mono: ‘DM Mono’, ‘Courier New’, monospace;
-–sans: ‘DM Sans’, system-ui, sans-serif;
+--bg: #080e1a;
+--bg2: #0d1829;
+--bg3: #0a1220;
+--border: #1e2d3d;
+--border2: #0f1e2e;
+--blue: #3b82f6;
+--blue-dim: #1d3a6e;
+--blue-light: #93c5fd;
+--slate: #94a3b8;
+--slate-dim: #64748b;
+--slate-dark: #475569;
+--slate-darker: #334155;
+--text: #e2e8f0;
+--text-bright: #f1f5f9;
+--green: #10b981;
+--amber: #f59e0b;
+--red: #ef4444;
+--mono: ‘DM Mono’, ‘Courier New’, monospace;
+--sans: ‘DM Sans’, system-ui, sans-serif;
 }
 
-html, body { background: var(–bg); color: var(–text); font-family: var(–mono); min-height: 100vh; }
+html, body { background: var(--bg); color: var(--text); font-family: var(--mono); min-height: 100vh; }
 
 /* HEADER */
 .header {
-border-bottom: 1px solid var(–border);
+border-bottom: 1px solid var(--border);
 padding: 28px 40px 24px;
 background: linear-gradient(180deg, #0d1829 0%, #080e1a 100%);
 display: flex;
@@ -46,71 +46,71 @@ justify-content: space-between;
 flex-wrap: wrap;
 gap: 12px;
 }
-.header-eyebrow { font-size: 11px; letter-spacing: 0.2em; color: var(–blue); text-transform: uppercase; margin-bottom: 6px; }
-.header h1 { font-size: 24px; font-weight: 700; color: var(–text-bright); letter-spacing: -0.02em; font-family: var(–sans); }
-.header-sub { font-size: 12px; color: var(–slate-dim); margin-top: 4px; }
-.header-fees { font-size: 11px; color: var(–slate-dark); text-align: right; line-height: 1.8; }
+.header-eyebrow { font-size: 11px; letter-spacing: 0.2em; color: var(--blue); text-transform: uppercase; margin-bottom: 6px; }
+.header h1 { font-size: 24px; font-weight: 700; color: var(--text-bright); letter-spacing: -0.02em; font-family: var(--sans); }
+.header-sub { font-size: 12px; color: var(--slate-dim); margin-top: 4px; }
+.header-fees { font-size: 11px; color: var(--slate-dark); text-align: right; line-height: 1.8; }
 
 /* CONTROLS */
 .controls {
 padding: 20px 40px;
-background: var(–bg2);
-border-bottom: 1px solid var(–border);
+background: var(--bg2);
+border-bottom: 1px solid var(--border);
 display: flex;
 gap: 32px;
 flex-wrap: wrap;
 align-items: center;
 }
 .control-group { display: flex; flex-direction: column; gap: 8px; }
-.control-label { font-size: 10px; letter-spacing: 0.15em; color: var(–slate-dark); text-transform: uppercase; }
+.control-label { font-size: 10px; letter-spacing: 0.15em; color: var(--slate-dark); text-transform: uppercase; }
 .btn-group { display: flex; gap: 4px; flex-wrap: wrap; }
 button {
 padding: 6px 14px;
 border-radius: 4px;
-border: 1px solid var(–border);
+border: 1px solid var(--border);
 background: transparent;
-color: var(–slate-dim);
+color: var(--slate-dim);
 font-size: 12px;
 cursor: pointer;
-font-family: var(–mono);
+font-family: var(--mono);
 transition: all 0.15s;
 }
-button:hover { border-color: var(–blue); color: var(–blue-light); }
-button.active { border-color: var(–blue); background: var(–blue-dim); color: var(–blue-light); }
-button.active-green { border-color: var(–green); background: #064e3b; color: #6ee7b7; }
+button:hover { border-color: var(--blue); color: var(--blue-light); }
+button.active { border-color: var(--blue); background: var(--blue-dim); color: var(--blue-light); }
+button.active-green { border-color: var(--green); background: #064e3b; color: #6ee7b7; }
 
 /* TAX SUMMARY BAR */
 .tax-bar {
 padding: 10px 40px;
-background: var(–bg3);
-border-bottom: 1px solid var(–border);
+background: var(--bg3);
+border-bottom: 1px solid var(--border);
 font-size: 11px;
-color: var(–slate-dark);
+color: var(--slate-dark);
 display: flex;
 gap: 32px;
 flex-wrap: wrap;
 align-items: center;
 }
-.tax-bar strong { color: var(–slate); }
-.tax-bar .scenario-label { margin-left: auto; color: var(–slate-dim); }
-.tax-bar .scenario-label strong { color: var(–blue-light); }
+.tax-bar strong { color: var(--slate); }
+.tax-bar .scenario-label { margin-left: auto; color: var(--slate-dim); }
+.tax-bar .scenario-label strong { color: var(--blue-light); }
 
 /* TABS */
-.tabs { padding: 0 40px; border-bottom: 1px solid var(–border); display: flex; gap: 0; }
+.tabs { padding: 0 40px; border-bottom: 1px solid var(--border); display: flex; gap: 0; }
 .tab-btn {
 padding: 14px 20px;
 border: none;
 border-bottom: 2px solid transparent;
 background: transparent;
-color: var(–slate-dark);
+color: var(--slate-dark);
 font-size: 12px;
 cursor: pointer;
-font-family: var(–mono);
+font-family: var(--mono);
 letter-spacing: 0.05em;
 border-radius: 0;
 }
-.tab-btn:hover { color: var(–slate); border-bottom-color: var(–slate-darker); }
-.tab-btn.active { color: var(–blue-light); border-bottom-color: var(–blue); }
+.tab-btn:hover { color: var(--slate); border-bottom-color: var(--slate-darker); }
+.tab-btn.active { color: var(--blue-light); border-bottom-color: var(--blue); }
 
 /* CONTENT */
 .content { padding: 32px 40px; }
@@ -119,69 +119,69 @@ border-radius: 0;
 
 /* CHART CONTAINER */
 .chart-wrap { position: relative; height: 380px; margin-bottom: 32px; }
-.chart-subtitle { font-size: 13px; color: var(–slate-dim); margin-bottom: 16px; }
+.chart-subtitle { font-size: 13px; color: var(--slate-dim); margin-bottom: 16px; }
 
 /* CARDS */
 .card-grid-3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; margin-top: 32px; }
 .card-grid-2 { display: grid; grid-template-columns: repeat(2,1fr); gap: 16px; margin-top: 32px; }
 .card {
-background: var(–bg2);
-border: 1px solid var(–border);
+background: var(--bg2);
+border: 1px solid var(--border);
 border-radius: 8px;
 padding: 20px 24px;
 }
 .card-full { grid-column: 1 / -1; }
 .card-title { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 12px; }
-.card-title.blue { color: var(–blue); }
-.card-title.amber { color: var(–amber); }
-.card-title.green { color: var(–green); }
-.card-body { font-size: 12px; color: var(–slate); line-height: 1.8; }
-.card-body div span.label { color: var(–slate-dark); }
-.card-body div strong { color: var(–text-bright); }
-.card-note { margin-top: 16px; padding: 12px 16px; background: var(–bg3); border-radius: 6px; font-size: 11px; color: var(–slate-dim); line-height: 1.7; }
+.card-title.blue { color: var(--blue); }
+.card-title.amber { color: var(--amber); }
+.card-title.green { color: var(--green); }
+.card-body { font-size: 12px; color: var(--slate); line-height: 1.8; }
+.card-body div span.label { color: var(--slate-dark); }
+.card-body div strong { color: var(--text-bright); }
+.card-note { margin-top: 16px; padding: 12px 16px; background: var(--bg3); border-radius: 6px; font-size: 11px; color: var(--slate-dim); line-height: 1.7; }
 
 /* WEALTH SNAPSHOT */
 .snapshot-card {
-background: var(–bg2);
+background: var(--bg2);
 border-radius: 8px;
 padding: 20px 24px;
 }
 .snapshot-title { font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 12px; }
 .snapshot-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; }
-.snapshot-item .lbl { font-size: 10px; color: var(–slate-dark); margin-bottom: 2px; }
-.snapshot-item .val { font-size: 15px; font-weight: 700; color: var(–text-bright); }
+.snapshot-item .lbl { font-size: 10px; color: var(--slate-dark); margin-bottom: 2px; }
+.snapshot-item .val { font-size: 15px; font-weight: 700; color: var(--text-bright); }
 
 /* TABLE */
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
-thead tr { border-bottom: 1px solid var(–border); }
-th { padding: 10px 16px; text-align: left; color: var(–slate-dark); font-weight: 500; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
-tbody tr { border-bottom: 1px solid var(–border2); }
+thead tr { border-bottom: 1px solid var(--border); }
+th { padding: 10px 16px; text-align: left; color: var(--slate-dark); font-weight: 500; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
+tbody tr { border-bottom: 1px solid var(--border2); }
 td { padding: 14px 16px; }
-.td-strategy { color: var(–text); font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.td-strategy { color: var(--text); font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.td-slate { color: var(–slate); }
-.td-red { color: var(–red); }
-.td-bright { color: var(–text-bright); font-weight: 700; }
-.td-green { color: var(–green); font-weight: 700; }
-.td-pos { color: var(–green); font-weight: 700; }
-.td-neg { color: var(–red); font-weight: 700; }
-.td-dim { color: var(–slate-darker); }
+.td-slate { color: var(--slate); }
+.td-red { color: var(--red); }
+.td-bright { color: var(--text-bright); font-weight: 700; }
+.td-green { color: var(--green); font-weight: 700; }
+.td-pos { color: var(--green); font-weight: 700; }
+.td-neg { color: var(--red); font-weight: 700; }
+.td-dim { color: var(--slate-darker); }
 
 /* EXCESS SURVIVAL CARDS */
 .survival-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; margin-top: 32px; }
-.survival-card { background: var(–bg2); border: 1px solid var(–border); border-radius: 8px; padding: 16px 20px; }
-.survival-label { font-size: 10px; color: var(–slate-dark); margin-bottom: 8px; letter-spacing: 0.1em; text-transform: uppercase; }
+.survival-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; }
+.survival-label { font-size: 10px; color: var(--slate-dark); margin-bottom: 8px; letter-spacing: 0.1em; text-transform: uppercase; }
 .survival-val { font-size: 22px; font-weight: 700; }
-.survival-sub { font-size: 11px; color: var(–slate-dark); margin-top: 4px; }
-.survival-warn { font-size: 10px; color: var(–amber); margin-top: 8px; line-height: 1.5; }
+.survival-sub { font-size: 11px; color: var(--slate-dark); margin-top: 4px; }
+.survival-warn { font-size: 10px; color: var(--amber); margin-top: 8px; line-height: 1.5; }
 
 /* NEXT STEPS GRID */
-.next-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; font-size: 12px; color: var(–slate); line-height: 1.8; }
-.next-grid .step-title { color: var(–text-bright); font-weight: 600; margin-bottom: 6px; }
+.next-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; font-size: 12px; color: var(--slate); line-height: 1.8; }
+.next-grid .step-title { color: var(--text-bright); font-weight: 600; margin-bottom: 6px; }
 
 /* FOOTER */
-.footer { padding: 16px 40px; border-top: 1px solid var(–border); font-size: 10px; color: var(–slate-darker); line-height: 1.7; }
+.footer { padding: 16px 40px; border-top: 1px solid var(--border); font-size: 10px; color: var(--slate-darker); line-height: 1.7; }
 
 @media (max-width: 700px) {
 .header, .controls, .tax-bar, .content, .tabs { padding-left: 16px; padding-right: 16px; }
@@ -325,7 +325,7 @@ td { padding: 14px 16px; }
           <div><span class="label">Manager: </span><strong>Parametric Portfolio Associates (MSIM subsidiary)</strong></div>
           <div><span class="label">Strategy Min: </span><strong>$100,000 (published); negotiable at $250M</strong></div>
           <div><span class="label">Benchmark: </span><strong>S&amp;P 500® Index</strong></div>
-          <div><span class="label">Parametric SMA Fee: </span><strong>0–0.75% (typically ~0.25–0.40% at scale)</strong></div>
+          <div><span class="label">Parametric SMA Fee: </span><strong>0--0.75% (typically ~0.25--0.40% at scale)</strong></div>
           <div><span class="label">MS Advisory Wrap: </span><strong>Up to 2.0% annually (Select UMA); often ~0.50% for large accounts</strong></div>
           <div><span class="label">Program: </span><strong>Select UMA (SMA sleeve within unified account)</strong></div>
           <div><span class="label">Tax Method: </span><strong>Daily TLH, highest federal marginal rates (CO addable)</strong></div>
@@ -372,7 +372,7 @@ td { padding: 14px 16px; }
 <!-- FOOTER -->
 
 <div class="footer">
-  ILLUSTRATIVE PURPOSES ONLY. Not investment advice. Returns are hypothetical and do not represent actual performance. Tax rates reflect 2024–2025 federal top brackets (LTCG: 20% + 3.8% NIIT; STCG: 37% + 3.8% NIIT) and Colorado flat rate of 4.40%. Actual fees, tax alpha, and outcomes will vary. Consult your Morgan Stanley advisor and tax counsel.
+  ILLUSTRATIVE PURPOSES ONLY. Not investment advice. Returns are hypothetical and do not represent actual performance. Tax rates reflect 2024--2025 federal top brackets (LTCG: 20% + 3.8% NIIT; STCG: 37% + 3.8% NIIT) and Colorado flat rate of 4.40%. Actual fees, tax alpha, and outcomes will vary. Consult your Morgan Stanley advisor and tax counsel.
 </div>
 
 <script>

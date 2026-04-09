@@ -1,0 +1,674 @@
+import { useState, useMemo } from "react";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from "recharts";
+
+// ─── CONSTANTS ───────────────────────────────────────────────────────────────
+const HORIZONS = [5, 10, 15, 20, 25, 30];
+const INITIAL_AUM = 250_000_000;
+
+// Colorado: 4.40% state income tax (flat, 2024+)
+// Federal LTCG: 20% + 3.8% NIIT = 23.8% (top bracket)
+// Federal STCG: 37% + 3.8% NIIT = 40.8%
+const TAX_PROFILES = {
+  ltcg: {
+    label: "Long-Term Gain Payer",
+    federal: 0.238,
+    state: 0.044,
+    combined: 0.238 + 0.044,
+  },
+  stcg: {
+    label: "Short-Term Gain Payer",
+    federal: 0.408,
+    state: 0.044,
+    combined: 0.408 + 0.044,
+  },
+};
+
+// Strategy assumptions
+const STRATEGIES = {
+  etf: {
+    label: "Passive Index ETF",
+    color: "#94a3b8",
+    grossReturn: 0.097,
+    fee: 0.0003,
+    annualTaxableGainRate: 0.005, // very low turnover
+    shortPositionEmbeddedLiability: 0,
+    taxAlpha: 0,
+    trackingError: 0,
+  },
+  directIndex: {
+    label: "Direct Indexing (Parametric/MS)",
+    color: "#3b82f6",
+    grossReturn: 0.097,
+    fee: 0.0025, // ~0.25% Parametric SMA fee at scale (negotiated at $250M)
+    msFee: 0.005, // MS advisory wrap ~0.50% max; blended ~0.50%
+    annualTaxableGainRate: 0.0,
+    taxAlphaLTCG: 0.011, // ~1.1% tax alpha (federal only ~1.5%, net of state drag)
+    taxAlphaSTCG: 0.018, // higher alpha when offsetting STCG
+    shortPositionEmbeddedLiabilityPct: 0.15, // embedded tax liability as % of AUM at maturity
+    trackingError: 0.015,
+  },
+  activeEtf: {
+    label: "Active ETF",
+    color: "#f59e0b",
+    grossReturn: 0.103, // +0.6% alpha assumption (net pre-fee)
+    fee: 0.0045,
+    annualTaxableGainRate: 0.04,
+    taxAlpha: 0,
+    shortPositionEmbeddedLiability: 0,
+    trackingError: 0.04,
+  },
+};
+
+// ─── ENGINE ──────────────────────────────────────────────────────────────────
+function computeWealth(strategy, taxProfile, horizon, terminalScenario, includeStateTax) {
+  const s = STRATEGIES[strategy];
+  const tp = TAX_PROFILES[taxProfile];
+  const taxRate = includeStateTax ? tp.combined : tp.federal;
+
+  const netFeeReturn = s.grossReturn - s.fee - (strategy === "directIndex" ? s.msFee || 0 : 0);
+
+  // Tax alpha for direct indexing
+  const taxAlpha =
+    strategy === "directIndex"
+      ? taxProfile === "ltcg"
+        ? s.taxAlphaLTCG
+        : s.taxAlphaSTCG
+      : 0;
+
+  // Annual after-tax return (simplified)
+  // Each year: wealth grows by net return, minus tax drag on realized gains
+  const annualTaxDrag = s.annualTaxableGainRate * taxRate;
+  const afterTaxReturn = netFeeReturn - annualTaxDrag + taxAlpha;
+
+  let wealth = INITIAL_AUM;
+  for (let y = 0; y < horizon; y++) {
+    wealth *= 1 + afterTaxReturn;
+  }
+
+  // Terminal tax depending on scenario
+  if (terminalScenario === "liquidate") {
+    const gain = wealth - INITIAL_AUM;
+    wealth -= gain * taxRate;
+  } else if (terminalScenario === "holdDeath") {
+    // Step-up in basis eliminates most capital gains tax
+    // BUT: direct indexing short positions do NOT get step-up
+    if (strategy === "directIndex") {
+      const embeddedLiability = wealth * s.shortPositionEmbeddedLiabilityPct;
+      wealth -= embeddedLiability * taxRate;
+    }
+    // Otherwise no terminal tax (step-up)
+  }
+  // terminalScenario === "hold" = no liquidation, just continue holding (no adjustment)
+
+  return wealth;
+}
+
+function buildSeries(taxProfile, terminalScenario, includeStateTax) {
+  return HORIZONS.map((h) => {
+    const etf = computeWealth("etf", taxProfile, h, terminalScenario, includeStateTax);
+    const di = computeWealth("directIndex", taxProfile, h, terminalScenario, includeStateTax);
+    const active = computeWealth("activeEtf", taxProfile, h, terminalScenario, includeStateTax);
+    return {
+      year: h,
+      ETF: etf,
+      "Direct Index": di,
+      "Active ETF": active,
+      diExcess: di - etf,
+      activeExcess: active - etf,
+    };
+  });
+}
+
+function buildMetricsTable(taxProfile, terminalScenario, includeStateTax) {
+  const tp = TAX_PROFILES[taxProfile];
+  const taxRate = includeStateTax ? tp.combined : tp.federal;
+
+  return Object.entries(STRATEGIES).map(([key, s]) => {
+    const fee = s.fee + (key === "directIndex" ? s.msFee || 0 : 0);
+    const netFeeReturn = s.grossReturn - fee;
+    const annualTaxDrag = s.annualTaxableGainRate * taxRate;
+    const taxAlpha =
+      key === "directIndex"
+        ? taxProfile === "ltcg"
+          ? s.taxAlphaLTCG
+          : s.taxAlphaSTCG
+        : 0;
+    const afterTaxReturn = netFeeReturn - annualTaxDrag + taxAlpha;
+    const etfAfterTax =
+      STRATEGIES.etf.grossReturn -
+      STRATEGIES.etf.fee -
+      STRATEGIES.etf.annualTaxableGainRate * taxRate;
+    const excessVsETF = afterTaxReturn - etfAfterTax;
+    const wealth30 = computeWealth(key, taxProfile, 30, terminalScenario, includeStateTax);
+
+    return {
+      strategy: s.label,
+      color: s.color,
+      grossReturn: (s.grossReturn * 100).toFixed(2) + "%",
+      totalFee: (fee * 100).toFixed(2) + "%",
+      netPreTaxReturn: (netFeeReturn * 100).toFixed(2) + "%",
+      taxAlpha: (taxAlpha * 100).toFixed(2) + "%",
+      afterTaxReturn: (afterTaxReturn * 100).toFixed(2) + "%",
+      excessVsETF: ((excessVsETF >= 0 ? "+" : "") + (excessVsETF * 100).toFixed(2)) + "%",
+      excessPositive: excessVsETF >= 0,
+      wealth30: wealth30,
+    };
+  });
+}
+
+// ─── FORMATTERS ──────────────────────────────────────────────────────────────
+const fmtB = (v) => "$" + (v / 1e9).toFixed(2) + "B";
+const fmtM = (v) => "$" + (v / 1e6).toFixed(1) + "M";
+const fmtPct = (v) => (v >= 0 ? "+" : "") + (v * 100).toFixed(2) + "%";
+
+const TERMINAL_LABELS = {
+  hold: "Hold (No Liquidation)",
+  holdDeath: "Hold Until Death (Step-Up)",
+  liquidate: "Full Liquidation",
+};
+
+// ─── CUSTOM TOOLTIP ──────────────────────────────────────────────────────────
+const CustomTooltip = ({ active, payload, label }) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div style={{
+      background: "#0f172a",
+      border: "1px solid #334155",
+      borderRadius: 8,
+      padding: "12px 16px",
+      fontSize: 13,
+      color: "#e2e8f0",
+    }}>
+      <div style={{ fontWeight: 700, marginBottom: 8, color: "#94a3b8", letterSpacing: "0.05em", fontSize: 11, textTransform: "uppercase" }}>
+        Year {label}
+      </div>
+      {payload.map((p) => (
+        <div key={p.name} style={{ display: "flex", justifyContent: "space-between", gap: 24, marginBottom: 4 }}>
+          <span style={{ color: p.color }}>{p.name}</span>
+          <span style={{ fontWeight: 600 }}>{fmtB(p.value)}</span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// ─── MAIN COMPONENT ──────────────────────────────────────────────────────────
+export default function App() {
+  const [taxProfile, setTaxProfile] = useState("ltcg");
+  const [terminalScenario, setTerminalScenario] = useState("holdDeath");
+  const [includeStateTax, setIncludeStateTax] = useState(true);
+  const [activeTab, setActiveTab] = useState("wealth");
+
+  const series = useMemo(
+    () => buildSeries(taxProfile, terminalScenario, includeStateTax),
+    [taxProfile, terminalScenario, includeStateTax]
+  );
+
+  const metrics = useMemo(
+    () => buildMetricsTable(taxProfile, terminalScenario, includeStateTax),
+    [taxProfile, terminalScenario, includeStateTax]
+  );
+
+  const excessSeries = useMemo(
+    () =>
+      HORIZONS.map((h, i) => ({
+        year: h,
+        "Direct Index vs ETF": series[i].diExcess,
+        "Active ETF vs ETF": series[i].activeExcess,
+      })),
+    [series]
+  );
+
+  const tp = TAX_PROFILES[taxProfile];
+
+  return (
+    <div style={{
+      minHeight: "100vh",
+      background: "#080e1a",
+      color: "#e2e8f0",
+      fontFamily: "'DM Mono', 'Courier New', monospace",
+      padding: "0 0 60px",
+    }}>
+      {/* Header */}
+      <div style={{
+        borderBottom: "1px solid #1e2d3d",
+        padding: "28px 40px 24px",
+        background: "linear-gradient(180deg, #0d1829 0%, #080e1a 100%)",
+      }}>
+        <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 11, letterSpacing: "0.2em", color: "#3b82f6", textTransform: "uppercase", marginBottom: 6 }}>
+              Morgan Stanley · Parametric · After-Tax Return Analysis
+            </div>
+            <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: "#f1f5f9", letterSpacing: "-0.02em" }}>
+              ETF vs. Direct Indexing vs. Active ETF
+            </h1>
+            <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>
+              $250M Hypothetical Allocation · Federal + Colorado State Tax · Parametric Custom Core S&P 500
+            </div>
+          </div>
+          <div style={{
+            fontSize: 11,
+            color: "#475569",
+            textAlign: "right",
+            lineHeight: 1.8,
+          }}>
+            <div>Parametric SMA fee: ~0.25% (negotiated at scale)</div>
+            <div>MS Advisory wrap: ~0.50%</div>
+            <div>ETF expense ratio: 0.03%</div>
+            <div>Active ETF fee: 0.45%</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Controls */}
+      <div style={{
+        padding: "20px 40px",
+        background: "#0d1829",
+        borderBottom: "1px solid #1e2d3d",
+        display: "flex",
+        gap: 32,
+        flexWrap: "wrap",
+        alignItems: "center",
+      }}>
+        {/* Tax Profile */}
+        <div>
+          <div style={{ fontSize: 10, letterSpacing: "0.15em", color: "#475569", textTransform: "uppercase", marginBottom: 8 }}>Tax Profile</div>
+          <div style={{ display: "flex", gap: 4 }}>
+            {Object.entries(TAX_PROFILES).map(([k, v]) => (
+              <button
+                key={k}
+                onClick={() => setTaxProfile(k)}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 4,
+                  border: "1px solid",
+                  borderColor: taxProfile === k ? "#3b82f6" : "#1e2d3d",
+                  background: taxProfile === k ? "#1d3a6e" : "transparent",
+                  color: taxProfile === k ? "#93c5fd" : "#64748b",
+                  fontSize: 12,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                {k === "ltcg" ? "LTCG (20% + 3.8% NIIT)" : "STCG (37% + 3.8% NIIT)"}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Terminal Scenario */}
+        <div>
+          <div style={{ fontSize: 10, letterSpacing: "0.15em", color: "#475569", textTransform: "uppercase", marginBottom: 8 }}>Terminal Scenario</div>
+          <div style={{ display: "flex", gap: 4 }}>
+            {Object.entries(TERMINAL_LABELS).map(([k, v]) => (
+              <button
+                key={k}
+                onClick={() => setTerminalScenario(k)}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 4,
+                  border: "1px solid",
+                  borderColor: terminalScenario === k ? "#3b82f6" : "#1e2d3d",
+                  background: terminalScenario === k ? "#1d3a6e" : "transparent",
+                  color: terminalScenario === k ? "#93c5fd" : "#64748b",
+                  fontSize: 12,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                {v}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* State Tax Toggle */}
+        <div>
+          <div style={{ fontSize: 10, letterSpacing: "0.15em", color: "#475569", textTransform: "uppercase", marginBottom: 8 }}>Colorado State Tax</div>
+          <button
+            onClick={() => setIncludeStateTax((v) => !v)}
+            style={{
+              padding: "6px 14px",
+              borderRadius: 4,
+              border: "1px solid",
+              borderColor: includeStateTax ? "#10b981" : "#1e2d3d",
+              background: includeStateTax ? "#064e3b" : "transparent",
+              color: includeStateTax ? "#6ee7b7" : "#64748b",
+              fontSize: 12,
+              cursor: "pointer",
+              fontFamily: "inherit",
+            }}
+          >
+            {includeStateTax ? "✓ CO 4.40% Included" : "Federal Only"}
+          </button>
+        </div>
+      </div>
+
+      {/* Tax summary bar */}
+      <div style={{
+        padding: "10px 40px",
+        background: "#0a1220",
+        borderBottom: "1px solid #1e2d3d",
+        fontSize: 11,
+        color: "#475569",
+        display: "flex",
+        gap: 32,
+      }}>
+        <span>Federal: <strong style={{ color: "#94a3b8" }}>{(tp.federal * 100).toFixed(1)}%</strong></span>
+        {includeStateTax && <span>Colorado: <strong style={{ color: "#94a3b8" }}>4.40%</strong></span>}
+        <span>All-In Rate: <strong style={{ color: "#f1f5f9" }}>{((includeStateTax ? tp.combined : tp.federal) * 100).toFixed(1)}%</strong></span>
+        <span style={{ marginLeft: "auto" }}>
+          Scenario: <strong style={{ color: "#93c5fd" }}>{TERMINAL_LABELS[terminalScenario]}</strong>
+          {terminalScenario === "holdDeath" && " · Step-up in basis applied (except DI short positions)"}
+        </span>
+      </div>
+
+      {/* Tab navigation */}
+      <div style={{ padding: "0 40px", borderBottom: "1px solid #1e2d3d", display: "flex", gap: 0 }}>
+        {[
+          { id: "wealth", label: "Cumulative Wealth" },
+          { id: "excess", label: "After-Tax Excess Return" },
+          { id: "metrics", label: "Return Metrics Table" },
+          { id: "notes", label: "MS / Parametric Offering Notes" },
+        ].map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setActiveTab(t.id)}
+            style={{
+              padding: "14px 20px",
+              border: "none",
+              borderBottom: activeTab === t.id ? "2px solid #3b82f6" : "2px solid transparent",
+              background: "transparent",
+              color: activeTab === t.id ? "#93c5fd" : "#475569",
+              fontSize: 12,
+              cursor: "pointer",
+              fontFamily: "inherit",
+              letterSpacing: "0.05em",
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ padding: "32px 40px" }}>
+        {/* CUMULATIVE WEALTH TAB */}
+        {activeTab === "wealth" && (
+          <div>
+            <div style={{ marginBottom: 24 }}>
+              <div style={{ fontSize: 13, color: "#64748b", marginBottom: 4 }}>
+                Hypothetical $250M starting allocation · Gross-of-fee returns normalized · Terminal tax applied per scenario
+              </div>
+            </div>
+            <ResponsiveContainer width="100%" height={380}>
+              <LineChart data={series} margin={{ top: 10, right: 30, left: 20, bottom: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e2d3d" />
+                <XAxis
+                  dataKey="year"
+                  stroke="#334155"
+                  tick={{ fill: "#64748b", fontSize: 11 }}
+                  tickFormatter={(v) => `Yr ${v}`}
+                />
+                <YAxis
+                  stroke="#334155"
+                  tick={{ fill: "#64748b", fontSize: 11 }}
+                  tickFormatter={(v) => `$${(v / 1e9).toFixed(1)}B`}
+                />
+                <Tooltip content={<CustomTooltip />} />
+                <Legend
+                  wrapperStyle={{ fontSize: 12, color: "#94a3b8", paddingTop: 16 }}
+                />
+                <Line type="monotone" dataKey="ETF" stroke="#94a3b8" strokeWidth={2} dot={{ r: 4 }} />
+                <Line type="monotone" dataKey="Direct Index" stroke="#3b82f6" strokeWidth={3} dot={{ r: 5 }} />
+                <Line type="monotone" dataKey="Active ETF" stroke="#f59e0b" strokeWidth={2} dot={{ r: 4 }} />
+              </LineChart>
+            </ResponsiveContainer>
+
+            {/* Snapshot cards */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginTop: 32 }}>
+              {metrics.map((m) => {
+                const w10 = computeWealth(
+                  Object.keys(STRATEGIES).find((k) => STRATEGIES[k].label === m.strategy),
+                  taxProfile, 10, terminalScenario, includeStateTax
+                );
+                const w20 = computeWealth(
+                  Object.keys(STRATEGIES).find((k) => STRATEGIES[k].label === m.strategy),
+                  taxProfile, 20, terminalScenario, includeStateTax
+                );
+                return (
+                  <div key={m.strategy} style={{
+                    background: "#0d1829",
+                    border: `1px solid ${m.color}33`,
+                    borderRadius: 8,
+                    padding: "20px 24px",
+                  }}>
+                    <div style={{ color: m.color, fontSize: 11, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 12 }}>
+                      {m.strategy}
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                      {[["10yr", w10], ["20yr", w20], ["30yr", m.wealth30]].map(([lbl, val]) => (
+                        <div key={lbl}>
+                          <div style={{ fontSize: 10, color: "#475569", marginBottom: 2 }}>{lbl}</div>
+                          <div style={{ fontSize: 15, fontWeight: 700, color: "#f1f5f9" }}>{fmtB(val)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* EXCESS RETURN TAB */}
+        {activeTab === "excess" && (
+          <div>
+            <div style={{ marginBottom: 24, fontSize: 13, color: "#64748b" }}>
+              After-tax cumulative dollar excess vs. Passive ETF baseline ($250M starting allocation)
+            </div>
+            <ResponsiveContainer width="100%" height={340}>
+              <BarChart data={excessSeries} margin={{ top: 10, right: 30, left: 20, bottom: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e2d3d" />
+                <XAxis dataKey="year" stroke="#334155" tick={{ fill: "#64748b", fontSize: 11 }} tickFormatter={(v) => `Yr ${v}`} />
+                <YAxis stroke="#334155" tick={{ fill: "#64748b", fontSize: 11 }} tickFormatter={(v) => `$${(v / 1e6).toFixed(0)}M`} />
+                <Tooltip
+                  formatter={(v, name) => [fmtM(v), name]}
+                  contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }}
+                  labelFormatter={(l) => `Year ${l}`}
+                />
+                <Legend wrapperStyle={{ fontSize: 12, color: "#94a3b8", paddingTop: 16 }} />
+                <Bar dataKey="Direct Index vs ETF" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="Active ETF vs ETF" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+
+            {/* Survival of tax alpha across scenarios */}
+            <div style={{ marginTop: 32 }}>
+              <div style={{ fontSize: 12, color: "#64748b", marginBottom: 16, letterSpacing: "0.05em" }}>
+                TAX ALPHA SURVIVAL — Direct Indexing Excess vs. ETF at Year 30 (${fmtM(INITIAL_AUM)} starting)
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+                {Object.keys(TERMINAL_LABELS).map((ts) => {
+                  const diW = computeWealth("directIndex", taxProfile, 30, ts, includeStateTax);
+                  const etfW = computeWealth("etf", taxProfile, 30, ts, includeStateTax);
+                  const excess = diW - etfW;
+                  return (
+                    <div key={ts} style={{
+                      background: "#0d1829",
+                      border: "1px solid #1e2d3d",
+                      borderRadius: 8,
+                      padding: "16px 20px",
+                    }}>
+                      <div style={{ fontSize: 10, color: "#475569", marginBottom: 8, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+                        {TERMINAL_LABELS[ts]}
+                      </div>
+                      <div style={{ fontSize: 22, fontWeight: 700, color: excess >= 0 ? "#3b82f6" : "#ef4444" }}>
+                        {fmtM(excess)}
+                      </div>
+                      <div style={{ fontSize: 11, color: "#475569", marginTop: 4 }}>
+                        DI excess vs. ETF (30yr, {taxProfile.toUpperCase()})
+                      </div>
+                      {ts === "holdDeath" && (
+                        <div style={{ fontSize: 10, color: "#f59e0b", marginTop: 8, lineHeight: 1.5 }}>
+                          ⚠ Embedded short position tax liability not stepped-up (~15% of DI AUM at terminal)
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* METRICS TABLE TAB */}
+        {activeTab === "metrics" && (
+          <div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid #1e2d3d" }}>
+                    {["Strategy", "Gross Return", "Total Fee", "Net Pre-Tax", "Tax Alpha", "After-Tax Return", "vs. ETF Baseline", "30yr Wealth"].map((h) => (
+                      <th key={h} style={{
+                        padding: "10px 16px",
+                        textAlign: "left",
+                        color: "#475569",
+                        fontWeight: 500,
+                        fontSize: 10,
+                        letterSpacing: "0.1em",
+                        textTransform: "uppercase",
+                      }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {metrics.map((m) => (
+                    <tr key={m.strategy} style={{ borderBottom: "1px solid #0f1e2e" }}>
+                      <td style={{ padding: "14px 16px" }}>
+                        <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: m.color, marginRight: 8 }} />
+                        <span style={{ color: "#e2e8f0", fontWeight: 600 }}>{m.strategy}</span>
+                      </td>
+                      <td style={{ padding: "14px 16px", color: "#94a3b8" }}>{m.grossReturn}</td>
+                      <td style={{ padding: "14px 16px", color: "#ef4444" }}>{m.totalFee}</td>
+                      <td style={{ padding: "14px 16px", color: "#94a3b8" }}>{m.netPreTaxReturn}</td>
+                      <td style={{ padding: "14px 16px", color: m.taxAlpha === "0.00%" ? "#334155" : "#10b981", fontWeight: m.taxAlpha === "0.00%" ? 400 : 700 }}>
+                        {m.taxAlpha === "0.00%" ? "—" : "+" + m.taxAlpha}
+                      </td>
+                      <td style={{ padding: "14px 16px", color: "#f1f5f9", fontWeight: 700 }}>{m.afterTaxReturn}</td>
+                      <td style={{
+                        padding: "14px 16px",
+                        color: m.excessPositive ? "#10b981" : "#ef4444",
+                        fontWeight: 700,
+                      }}>{m.excessVsETF}</td>
+                      <td style={{ padding: "14px 16px", color: "#f1f5f9", fontWeight: 700 }}>{fmtB(m.wealth30)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={{ marginTop: 32, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              {/* Colorado context */}
+              <div style={{ background: "#0d1829", border: "1px solid #1e2d3d", borderRadius: 8, padding: "20px 24px" }}>
+                <div style={{ fontSize: 11, color: "#3b82f6", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 12 }}>
+                  Colorado Tax Context
+                </div>
+                <div style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.8 }}>
+                  <div>State flat rate: <strong style={{ color: "#f1f5f9" }}>4.40%</strong></div>
+                  <div>LTCG all-in (federal + CO): <strong style={{ color: "#f1f5f9" }}>28.2%</strong></div>
+                  <div>STCG all-in (federal + CO): <strong style={{ color: "#f1f5f9" }}>44.8%</strong></div>
+                  <div style={{ marginTop: 8, color: "#64748b", fontSize: 11 }}>
+                    State tax increases all-in drag but also increases DI tax alpha benefit — net effect slightly positive for DI at LTCG rates.
+                  </div>
+                </div>
+              </div>
+              {/* Hold-until-death note */}
+              <div style={{ background: "#0d1829", border: "1px solid #1e2d3d", borderRadius: 8, padding: "20px 24px" }}>
+                <div style={{ fontSize: 11, color: "#f59e0b", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 12 }}>
+                  Hold-Until-Death / Short Position Liability
+                </div>
+                <div style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.8 }}>
+                  <div>Step-up in basis: <strong style={{ color: "#10b981" }}>eliminates most embedded gains</strong></div>
+                  <div>DI short positions: <strong style={{ color: "#ef4444" }}>do NOT receive step-up</strong></div>
+                  <div>Estimated terminal short liability: <strong style={{ color: "#f1f5f9" }}>~15% of AUM</strong></div>
+                  <div style={{ marginTop: 8, color: "#64748b", fontSize: 11 }}>
+                    Heirs inherit this liability. Quantified separately in the excess return panel above.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* OFFERING NOTES TAB */}
+        {activeTab === "notes" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+            <div style={{ background: "#0d1829", border: "1px solid #1e2d3d", borderRadius: 8, padding: "24px 28px" }}>
+              <div style={{ fontSize: 11, color: "#3b82f6", letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 16 }}>
+                MS / Parametric — S&P 500 Direct Index (PPA-7)
+              </div>
+              <div style={{ fontSize: 12, color: "#94a3b8", lineHeight: 2 }}>
+                <div><span style={{ color: "#475569" }}>Manager:</span> <strong style={{ color: "#e2e8f0" }}>Parametric Portfolio Associates (MSIM subsidiary)</strong></div>
+                <div><span style={{ color: "#475569" }}>Strategy Min:</span> <strong style={{ color: "#e2e8f0" }}>$100,000 (published); negotiable at $250M</strong></div>
+                <div><span style={{ color: "#475569" }}>Benchmark:</span> <strong style={{ color: "#e2e8f0" }}>S&P 500® Index</strong></div>
+                <div><span style={{ color: "#475569" }}>Parametric SMA Fee:</span> <strong style={{ color: "#e2e8f0" }}>0–0.75% (typically ~0.25–0.40% at scale)</strong></div>
+                <div><span style={{ color: "#475569" }}>MS Advisory Wrap:</span> <strong style={{ color: "#e2e8f0" }}>Up to 2.0% annually (Select UMA); often ~0.50% for large accounts</strong></div>
+                <div><span style={{ color: "#475569" }}>Program:</span> <strong style={{ color: "#e2e8f0" }}>Select UMA (SMA sleeve within unified account)</strong></div>
+                <div><span style={{ color: "#475569" }}>Tax Method:</span> <strong style={{ color: "#e2e8f0" }}>Daily TLH, highest federal marginal rates (CO addable)</strong></div>
+                <div><span style={{ color: "#475569" }}>AUM (composite):</span> <strong style={{ color: "#e2e8f0" }}>$16.6B (12/31/2025)</strong></div>
+                <div><span style={{ color: "#475569" }}>Inception:</span> <strong style={{ color: "#e2e8f0" }}>November 1998</strong></div>
+              </div>
+              <div style={{ marginTop: 16, padding: "12px 16px", background: "#0a1220", borderRadius: 6, fontSize: 11, color: "#64748b", lineHeight: 1.7 }}>
+                Note: MS does not publicly list a Nasdaq-100 direct indexing SMA equivalent to PPA-7 at this time. For Nasdaq-100 exposure, ask your FA about custom benchmark variants or the Parametric Equity Plus ETF. Confirm availability with your MS team directly.
+              </div>
+            </div>
+
+            <div style={{ background: "#0d1829", border: "1px solid #1e2d3d", borderRadius: 8, padding: "24px 28px" }}>
+              <div style={{ fontSize: 11, color: "#f59e0b", letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 16 }}>
+                Analysis Assumptions & Sensitivities
+              </div>
+              <div style={{ fontSize: 12, color: "#94a3b8", lineHeight: 2 }}>
+                <div><span style={{ color: "#475569" }}>Gross equity return:</span> <strong style={{ color: "#e2e8f0" }}>9.7% (historical S&P 500 LT avg)</strong></div>
+                <div><span style={{ color: "#475569" }}>Active ETF gross alpha:</span> <strong style={{ color: "#e2e8f0" }}>+0.6% above index</strong></div>
+                <div><span style={{ color: "#475569" }}>DI tax alpha (LTCG):</span> <strong style={{ color: "#e2e8f0" }}>~1.1% net (fed + CO)</strong></div>
+                <div><span style={{ color: "#475569" }}>DI tax alpha (STCG):</span> <strong style={{ color: "#e2e8f0" }}>~1.8% net (fed + CO)</strong></div>
+                <div><span style={{ color: "#475569" }}>ETF annual gain realization:</span> <strong style={{ color: "#e2e8f0" }}>0.5% of AUM</strong></div>
+                <div><span style={{ color: "#475569" }}>Active ETF gain realization:</span> <strong style={{ color: "#e2e8f0" }}>4.0% of AUM</strong></div>
+                <div><span style={{ color: "#475569" }}>Short position terminal liability:</span> <strong style={{ color: "#e2e8f0" }}>~15% of DI AUM</strong></div>
+              </div>
+              <div style={{ marginTop: 16, padding: "12px 16px", background: "#0a1220", borderRadius: 6, fontSize: 11, color: "#64748b", lineHeight: 1.7 }}>
+                These are illustrative assumptions for planning purposes. The MS/Parametric team can run their proprietary after-tax backtest with client-specific tax basis, state, and scenario inputs. Request the Parametric Custom Core S&P 500 after-tax performance report (PPA-7) for live composite data.
+              </div>
+            </div>
+
+            <div style={{ gridColumn: "1/-1", background: "#0d1829", border: "1px solid #1e2d3d", borderRadius: 8, padding: "24px 28px" }}>
+              <div style={{ fontSize: 11, color: "#10b981", letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 16 }}>
+                Next Steps to Request from MS Team
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, fontSize: 12, color: "#94a3b8", lineHeight: 1.8 }}>
+                <div>
+                  <div style={{ color: "#e2e8f0", fontWeight: 600, marginBottom: 6 }}>1. Proprietary Backtests</div>
+                  Ask for the Parametric after-tax performance composite (PPA-7) including net-of-all-fees returns, annual tax alpha, and after-tax alpha vs. S&P 500 passive ETF — with Colorado state tax layered in.
+                </div>
+                <div>
+                  <div style={{ color: "#e2e8f0", fontWeight: 600, marginBottom: 6 }}>2. Liquidation Sensitivity</div>
+                  Request the "optionality cost analysis" showing cumulative tax alpha survival at 5, 10, 15, 20yr liquidation horizons vs. hold-until-death, including embedded gain schedules.
+                </div>
+                <div>
+                  <div style={{ color: "#e2e8f0", fontWeight: 600, marginBottom: 6 }}>3. Short Position Liability Schedule</div>
+                  Request a forward projection of the embedded short position tax liability that does not benefit from step-up, broken out separately from the long-side gain analysis.
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Footer disclaimer */}
+      <div style={{ padding: "16px 40px", borderTop: "1px solid #1e2d3d", fontSize: 10, color: "#334155", lineHeight: 1.7 }}>
+        ILLUSTRATIVE PURPOSES ONLY. Not investment advice. Returns are hypothetical and do not represent actual performance. Tax rates reflect 2024–2025 federal top brackets (LTCG: 20% + 3.8% NIIT; STCG: 37% + 3.8% NIIT) and Colorado flat rate of 4.40%. Actual fees, tax alpha, and outcomes will vary. Consult your Morgan Stanley advisor and tax counsel.
+      </div>
+    </div>
+  );
+}
