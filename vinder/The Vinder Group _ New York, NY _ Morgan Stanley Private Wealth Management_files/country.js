@@ -1,0 +1,1 @@
+(function () {/*New York USA*/var country = {'code':'us','id':1,'defaultLanguage':'en-us', 'stateId': 37, 'stateCode': 'ny'};if (!window.evidon) window.evidon = {};	if (window.evidon.notice) {	window.evidon.notice.setLocation(country);}else {window.evidon.location = country;}})();
