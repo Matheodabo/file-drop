@@ -166,6 +166,25 @@
       }
 
       container.innerHTML = '';
+
+      // Hardcoded web tools section
+      const tools = [
+        { label: 'Vinder Group Website', description: 'Local website simulator', icon: '🌐', url: 'vinder/index.html' },
+      ];
+      tools.forEach(t => {
+        const card = document.createElement('div');
+        card.className = 'file-card';
+        card.innerHTML = `
+          <div class="file-icon">${t.icon}</div>
+          <div class="file-info">
+            <div class="file-name">${t.label}</div>
+            ${t.description ? `<div class="file-desc">${t.description}</div>` : ''}
+          </div>
+          <a class="dl-btn" href="${t.url}" target="_blank" style="background:#10b981;">Open</a>
+        `;
+        container.appendChild(card);
+      });
+
       files.forEach(f => {
         const card = document.createElement('div');
         card.className = 'file-card';
