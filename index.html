@@ -17,7 +17,7 @@
 
     header {
       max-width: 700px;
-      margin: 0 auto 2.5rem;
+      margin: 0 auto 1.5rem;
       text-align: center;
     }
 
@@ -28,10 +28,30 @@
       letter-spacing: -0.02em;
     }
 
-    header p {
-      margin-top: 0.5rem;
+    .tabs {
+      max-width: 700px;
+      margin: 0 auto 1.5rem;
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .tab-btn {
+      flex: 1;
+      padding: 0.6rem;
+      border-radius: 8px;
+      border: 1px solid #2d3148;
+      background: transparent;
       color: #718096;
-      font-size: 0.95rem;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .tab-btn.active {
+      background: #1a1d27;
+      border-color: #4f5aff;
+      color: #fff;
     }
 
     #file-list {
@@ -108,6 +128,60 @@
     }
 
     #error { color: #fc8181; }
+
+    /* Submit tab */
+    #submit-panel {
+      max-width: 700px;
+      margin: 0 auto;
+      display: none;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    #submit-panel input, #submit-panel textarea {
+      width: 100%;
+      background: #1a1d27;
+      border: 1px solid #2d3148;
+      border-radius: 8px;
+      color: #e2e8f0;
+      font-size: 0.9rem;
+      padding: 0.75rem 1rem;
+      outline: none;
+      font-family: 'Courier New', monospace;
+      transition: border-color 0.15s;
+    }
+
+    #submit-panel input:focus, #submit-panel textarea:focus {
+      border-color: #4f5aff;
+    }
+
+    #submit-panel textarea {
+      min-height: 320px;
+      resize: vertical;
+    }
+
+    #submit-btn {
+      background: #4f5aff;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 0.75rem;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    #submit-btn:hover { background: #3d47e8; }
+    #submit-btn:disabled { background: #2d3148; cursor: not-allowed; }
+
+    #submit-status {
+      text-align: center;
+      font-size: 0.9rem;
+      padding: 0.5rem;
+      border-radius: 7px;
+      display: none;
+    }
   </style>
 </head>
 <body>
@@ -128,29 +202,48 @@
   </div>
 </div>
 
-<!-- Main Content (hidden until unlocked) -->
+<!-- Main Content -->
 <div id="main" style="display:none;">
 
-<header>
-  <h1>File Drop</h1>
-  <p>Click a file to download. Rename .txt files to the correct extension after saving.</p>
-</header>
+  <header>
+    <h1>File Drop</h1>
+  </header>
 
-<div id="file-list">
-  <div id="loading">Loading files...</div>
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('files')">Files</button>
+    <button class="tab-btn" onclick="switchTab('submit')">Submit Code</button>
+  </div>
+
+  <div id="file-list">
+    <div id="loading">Loading files...</div>
+  </div>
+
+  <div id="submit-panel">
+    <input id="filename-input" type="text" placeholder="Filename (e.g. my_script) — .txt added automatically" />
+    <textarea id="code-input" placeholder="Paste your code here..."></textarea>
+    <button id="submit-btn" onclick="submitCode()">Upload to GitHub</button>
+    <div id="submit-status"></div>
+  </div>
+
 </div>
-</div> <!-- end #main -->
 
 <script>
-  const icons = {
-    pdf: '📄',
-    txt: '📝',
-    default: '📁'
-  };
+  const GITHUB_TOKEN = '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';
+  const REPO = 'Matheodabo/file-drop';
+
+  const icons = { pdf: '📄', txt: '📝', html: '🌐', default: '📁' };
 
   function getIcon(filename) {
     const ext = filename.split('.').pop().toLowerCase();
     return icons[ext] || icons.default;
+  }
+
+  function switchTab(tab) {
+    document.querySelectorAll('.tab-btn').forEach((b, i) => {
+      b.classList.toggle('active', (i === 0 && tab === 'files') || (i === 1 && tab === 'submit'));
+    });
+    document.getElementById('file-list').style.display = tab === 'files' ? 'flex' : 'none';
+    document.getElementById('submit-panel').style.display = tab === 'submit' ? 'flex' : 'none';
   }
 
   async function loadFiles() {
@@ -160,14 +253,9 @@
       if (!res.ok) throw new Error('Could not load file list');
       const files = await res.json();
 
-      if (files.length === 0) {
-        container.innerHTML = '<div id="loading">No files available yet.</div>';
-        return;
-      }
-
       container.innerHTML = '';
 
-      // Hardcoded web tools section
+      // Web tools
       const tools = [
         { label: 'Vinder Group Website', description: 'Local website simulator', icon: '🌐', url: 'vinder/index.html' },
       ];
@@ -184,6 +272,11 @@
         `;
         container.appendChild(card);
       });
+
+      if (files.length === 0 && tools.length === 0) {
+        container.innerHTML = '<div id="loading">No files available yet.</div>';
+        return;
+      }
 
       files.forEach(f => {
         const card = document.createElement('div');
@@ -202,6 +295,71 @@
     } catch (e) {
       container.innerHTML = `<div id="error">Error loading files: ${e.message}</div>`;
     }
+  }
+
+  async function submitCode() {
+    const filename = document.getElementById('filename-input').value.trim();
+    const code = document.getElementById('code-input').value;
+    const status = document.getElementById('submit-status');
+    const btn = document.getElementById('submit-btn');
+
+    if (!filename) { showStatus('Please enter a filename.', 'error'); return; }
+    if (!code.trim()) { showStatus('Please paste some code first.', 'error'); return; }
+
+    const fullName = filename.endsWith('.txt') ? filename : filename + '.txt';
+    const path = `files/${fullName}`;
+    const content = btoa(unescape(encodeURIComponent(code)));
+
+    btn.disabled = true;
+    showStatus('Uploading...', 'info');
+
+    try {
+      // Check if file already exists (need SHA to update)
+      let sha = null;
+      const check = await fetch(`https://api.github.com/repos/${REPO}/contents/${path}`, {
+        headers: { Authorization: `Bearer ${GITHUB_TOKEN}` }
+      });
+      if (check.ok) {
+        const existing = await check.json();
+        sha = existing.sha;
+      }
+
+      const body = {
+        message: `Upload ${fullName}`,
+        content,
+        ...(sha ? { sha } : {})
+      };
+
+      const res = await fetch(`https://api.github.com/repos/${REPO}/contents/${path}`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${GITHUB_TOKEN}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      });
+
+      if (res.ok) {
+        showStatus(`✓ "${fullName}" uploaded successfully!`, 'success');
+        document.getElementById('filename-input').value = '';
+        document.getElementById('code-input').value = '';
+      } else {
+        const err = await res.json();
+        showStatus('Upload failed: ' + (err.message || res.status), 'error');
+      }
+    } catch (e) {
+      showStatus('Upload failed: ' + e.message, 'error');
+    }
+
+    btn.disabled = false;
+  }
+
+  function showStatus(msg, type) {
+    const el = document.getElementById('submit-status');
+    el.textContent = msg;
+    el.style.display = 'block';
+    el.style.background = type === 'success' ? '#1a3a2a' : type === 'error' ? '#3a1a1a' : '#1a1d27';
+    el.style.color = type === 'success' ? '#6ee7b7' : type === 'error' ? '#fc8181' : '#718096';
   }
 
   function checkPw() {
