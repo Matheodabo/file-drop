@@ -288,7 +288,10 @@
             ${f.description ? `<div class="file-desc">${f.description}</div>` : ''}
             ${f.date ? `<div class="file-date">${f.date}</div>` : ''}
           </div>
-          <a class="dl-btn" href="files/${f.name}" download="${f.name}">Download</a>
+          <div style="display:flex;gap:0.5rem;align-items:center;">
+            <a class="dl-btn" href="files/${f.name}" download="${f.name}">Download</a>
+            <button onclick="deleteFile('${f.name}', this)" title="Delete" style="background:transparent;border:1px solid #3a1a1a;border-radius:7px;color:#fc8181;font-size:1rem;padding:0.45rem 0.6rem;cursor:pointer;transition:background 0.15s;" onmouseover="this.style.background='#3a1a1a'" onmouseout="this.style.background='transparent'">🗑</button>
+          </div>
         `;
         container.appendChild(card);
       });
@@ -352,6 +355,39 @@
     }
 
     btn.disabled = false;
+  }
+
+  async function deleteFile(filename, btn) {
+    if (!confirm(`Delete "${filename}"?`)) return;
+    btn.disabled = true;
+    btn.textContent = '...';
+    try {
+      const path = `files/${filename}`;
+      const check = await fetch(`https://api.github.com/repos/${REPO}/contents/${path}`, {
+        headers: { Authorization: `Bearer ${GITHUB_TOKEN}` }
+      });
+      if (!check.ok) throw new Error('File not found on GitHub');
+      const { sha } = await check.json();
+
+      const res = await fetch(`https://api.github.com/repos/${REPO}/contents/${path}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${GITHUB_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: `Delete ${filename}`, sha })
+      });
+
+      if (res.ok) {
+        btn.closest('.file-card').remove();
+      } else {
+        const err = await res.json();
+        alert('Delete failed: ' + (err.message || res.status));
+        btn.disabled = false;
+        btn.textContent = '🗑';
+      }
+    } catch (e) {
+      alert('Delete failed: ' + e.message);
+      btn.disabled = false;
+      btn.textContent = '🗑';
+    }
   }
 
   function showStatus(msg, type) {
