@@ -1,0 +1,384 @@
+'=======================================================================
+' PART 3 MACRO — Disclosures and Description Cleanup
+' PURPOSE: Adds legal disclosure rows at the bottom, cleans up
+'          Description cell text for all activity types, and does
+'          a final wrap/unwrap pass on data cells.
+'
+' RUNS AFTER: SpendingReportPARTTWO
+'
+' HOW LINE-SPLITTING WORKS:
+'   Excel cells store multi-line content using Chr(10) — the line feed
+'   character created when you press Alt+Enter in a cell. This macro
+'   splits on Chr(10) to isolate individual lines within a cell,
+'   keeping only what is needed and discarding the rest.
+'=======================================================================
+
+Sub SpendingReportPARTTHREE()
+
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+
+    Dim ws As Worksheet
+    Set ws = ActiveSheet
+
+
+    '-------------------------------------------------------------------
+    ' SECTION 1: Find "TOTAL WITHDRAWALS" in column B
+    '            Navigate 8 rows below it (counting from the row
+    '            immediately under it, inclusive)
+    '-------------------------------------------------------------------
+    Dim totalWithRow As Long
+    totalWithRow = 0
+
+    Dim searchRow As Long
+    Dim lastUsedRow As Long
+    lastUsedRow = ws.Cells(ws.Rows.Count, 2).End(xlUp).Row
+
+    For searchRow = 1 To lastUsedRow
+        If Trim(ws.Cells(searchRow, 2).Value) = "TOTAL WITHDRAWALS" Then
+            totalWithRow = searchRow
+            Exit For
+        End If
+    Next searchRow
+
+    If totalWithRow = 0 Then
+        MsgBox "ERROR: 'TOTAL WITHDRAWALS' not found in column B." & vbNewLine & _
+               "Make sure Part 2 has been run first.", vbCritical, "Label Not Found"
+        Application.Calculation = xlCalculationAutomatic
+        Application.ScreenUpdating = True
+        Exit Sub
+    End If
+
+    Dim disc1Row As Long
+    disc1Row = totalWithRow + 8
+
+    Dim disc2Row As Long
+    disc2Row = disc1Row + 2
+
+
+    '-------------------------------------------------------------------
+    ' SECTION 2: First disclosure — merge B:F, center, wrap, insert text
+    '-------------------------------------------------------------------
+    Dim disc1Text As String
+    disc1Text = "We are presenting the information contained herein pursuant to our " & _
+                "customer's request. It is valid as of the date of issuance and is " & _
+                "subject to change. Morgan Stanley Does not warranty or guaranty that " & _
+                "such identified securities, assets or monies will remain in the " & _
+                "customer's account. The customer has the full power to withdraw assets " & _
+                "from this account at any time and no security interest or collateral " & _
+                "rights are being granted to any party other than Morgan Stanley to the " & _
+                "extent of any debit in the account."
+
+    With ws.Range(ws.Cells(disc1Row, 2), ws.Cells(disc1Row, 6))
+        .Merge
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .WrapText = True
+        .Value = disc1Text
+    End With
+    ws.Rows(disc1Row).RowHeight = 15 * 2.5 * 6
+
+
+    '-------------------------------------------------------------------
+    ' SECTION 3: Second disclosure — same treatment, one row gap below
+    '-------------------------------------------------------------------
+    Dim disc2Text As String
+    disc2Text = "The information and data contained in this report are from sources " & _
+                "considered reliable, but their accuracy and completeness is not " & _
+                "guaranteed. This report has been prepared for illustrative purposes " & _
+                "only and is not intended to be used as a substitute for monthly " & _
+                "transaction statements you receive on a regular basis from Morgan " & _
+                "Stanley Smith Barney LLC. Please compare the data on this document " & _
+                "carefully with your monthly statements to verify its accuracy. The " & _
+                "Company strongly encourages you to consult with your own accountants " & _
+                "or other advisors with respect to any tax questions."
+
+    With ws.Range(ws.Cells(disc2Row, 2), ws.Cells(disc2Row, 6))
+        .Merge
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .WrapText = True
+        .Value = disc2Text
+    End With
+    ws.Rows(disc2Row).RowHeight = 15 * 2.5 * 6
+
+
+    '-------------------------------------------------------------------
+    ' SECTION 4: Description Cleanup
+    '
+    ' Chr(10) = line feed = the "indentation" / new line inside a cell.
+    ' Split(cellValue, Chr(10)) gives an array of individual lines.
+    ' GetFirstNLines() helper keeps the first N lines and joins them back.
+    '
+    ' Rules:
+    '  1.  Zelle Payment          → keep first line only
+    '  2.  ATM Withdrawal         → keep first two lines
+    '  3.  Automated Payment + "AMEX EPAYMENT" → relabel to "AMEX EPAYMENT"
+    '      Automated Payment (other) → keep first line only
+    '  4.  Automatic Deposit      → keep first line only
+    '  5.  Check                  → keep first line only
+    '  6.  Debit Card             → if VENMO *, keep first line only
+    '                               otherwise keep first two lines
+    '  7.  WIRED FUNDS SENT       → scan for BENE: line, keep name only
+    '  8.  Direct Deposit         → keep first two lines
+    '  9.  Mobile Deposit         → relabel to "FUNDS RECEIVED"
+    ' 10.  Funds Received +       → (a) strip last line starting with "Ref:"
+    '      WIRED FUNDS RECEIVED     (b) strip "WIRED FUNDS RECEIVED" first line
+    ' 11.  Transfer out of Acct   → keep first line only
+    ' 12.  Withdrawal             → keep second line only
+    '                               (fallback to first line if only one exists)
+    '-------------------------------------------------------------------
+    Dim r As Long
+    Dim actVal As String
+    Dim descVal As String
+    Dim descLines() As String
+
+    For r = 1 To ws.Cells(ws.Rows.Count, 3).End(xlUp).Row
+
+        actVal = Trim(ws.Cells(r, 3).Value)
+        descVal = ws.Cells(r, 4).Value
+
+        If actVal = "" Or actVal = "Activity" Then GoTo NextRow
+
+        descLines = Split(descVal, Chr(10))
+
+        Select Case LCase(actVal)
+
+            '------------------------------------------------------------
+            ' Rule 1: Zelle Payment — keep first line only
+            '------------------------------------------------------------
+            Case "zelle payment"
+                ws.Cells(r, 4).Value = Trim(descLines(0))
+
+            '------------------------------------------------------------
+            ' Rule 2: ATM Withdrawal — keep first two lines
+            '------------------------------------------------------------
+            Case "atm withdrawal"
+                ws.Cells(r, 4).Value = GetFirstNLines(descVal, 2)
+
+            '------------------------------------------------------------
+            ' Rule 3: Automated Payment
+            '         If first two words are AMEX EPAYMENT → relabel
+            '         Otherwise → keep first line only
+            '------------------------------------------------------------
+            Case "automated payment"
+                Dim descWords() As String
+                descWords = Split(Trim(descLines(0)), " ")
+                If UBound(descWords) >= 1 Then
+                    If LCase(Trim(descWords(0))) = "amex" And _
+                       LCase(Trim(descWords(1))) = "epayment" Then
+                        ws.Cells(r, 4).Value = "AMEX EPAYMENT"
+                    Else
+                        ws.Cells(r, 4).Value = Trim(descLines(0))
+                    End If
+                Else
+                    ws.Cells(r, 4).Value = Trim(descLines(0))
+                End If
+
+            '------------------------------------------------------------
+            ' Rule 4: Automatic Deposit — keep first line only
+            '------------------------------------------------------------
+            Case "automatic deposit"
+                ws.Cells(r, 4).Value = Trim(descLines(0))
+
+            '------------------------------------------------------------
+            ' Rule 5: Check — keep first line only
+            '------------------------------------------------------------
+            Case "check"
+                ws.Cells(r, 4).Value = Trim(descLines(0))
+
+            '------------------------------------------------------------
+            ' Rule 6: Debit Card
+            '         If first line starts with VENMO * → keep first
+            '         line only (drop both second and third lines)
+            '         Otherwise → keep first two lines
+            '------------------------------------------------------------
+            Case "debit card"
+                If Len(Trim(descLines(0))) >= 7 Then
+                    If LCase(Left(Trim(descLines(0)), 7)) = "venmo *" Then
+                        ws.Cells(r, 4).Value = Trim(descLines(0))
+                    Else
+                        ws.Cells(r, 4).Value = GetFirstNLines(descVal, 2)
+                    End If
+                Else
+                    ws.Cells(r, 4).Value = GetFirstNLines(descVal, 2)
+                End If
+
+            '------------------------------------------------------------
+            ' Rule 8: Direct Deposit — keep first two lines
+            '------------------------------------------------------------
+            Case "direct deposit"
+                ws.Cells(r, 4).Value = GetFirstNLines(descVal, 2)
+
+            '------------------------------------------------------------
+            ' Rule 9: Mobile Deposit — relabel to FUNDS RECEIVED
+            '------------------------------------------------------------
+            Case "mobile deposit"
+                ws.Cells(r, 4).Value = "FUNDS RECEIVED"
+
+            '------------------------------------------------------------
+            ' Rule 10: Funds Received + WIRED FUNDS RECEIVED
+            '          Step (a): Strip last line if it starts with "Ref:"
+            '          Step (b): Strip "WIRED FUNDS RECEIVED" first line
+            '          Result: bank name + sender name only
+            '------------------------------------------------------------
+            Case "funds received"
+                Dim descTrimmedFR As String
+                descTrimmedFR = Trim(descVal)
+                If Len(descTrimmedFR) >= 20 Then
+                    If LCase(Left(descTrimmedFR, 20)) = "wired funds received" Then
+
+                        ' Step (a): Remove last line if it starts with "Ref:"
+                        Dim frLines() As String
+                        frLines = Split(descVal, Chr(10))
+                        Dim lastIdx As Long
+                        lastIdx = UBound(frLines)
+                        If LCase(Left(Trim(frLines(lastIdx)), 4)) = "ref:" Then
+                            Dim frResult As String
+                            Dim frk As Long
+                            frResult = ""
+                            For frk = 0 To lastIdx - 1
+                                If frk = 0 Then
+                                    frResult = Trim(frLines(frk))
+                                Else
+                                    frResult = frResult & Chr(10) & Trim(frLines(frk))
+                                End If
+                            Next frk
+                            ws.Cells(r, 4).Value = frResult
+                        End If
+
+                        ' Step (b): Strip "WIRED FUNDS RECEIVED" first line
+                        '           Re-read cell so we work on already-cleaned value
+                        Dim finalVal As String
+                        finalVal = ws.Cells(r, 4).Value
+                        Dim finalLines() As String
+                        finalLines = Split(finalVal, Chr(10))
+                        If LCase(Trim(finalLines(0))) = "wired funds received" Then
+                            Dim rebuiltVal As String
+                            rebuiltVal = ""
+                            Dim fl As Long
+                            For fl = 1 To UBound(finalLines)
+                                If rebuiltVal = "" Then
+                                    rebuiltVal = Trim(finalLines(fl))
+                                Else
+                                    rebuiltVal = rebuiltVal & Chr(10) & Trim(finalLines(fl))
+                                End If
+                            Next fl
+                            ws.Cells(r, 4).Value = rebuiltVal
+                        End If
+
+                    End If
+                End If
+
+            '------------------------------------------------------------
+            ' Rule 11: Transfer out of Acct — keep first line only
+            '------------------------------------------------------------
+            Case "transfer out of acct"
+                ws.Cells(r, 4).Value = Trim(descLines(0))
+
+            '------------------------------------------------------------
+            ' Rule 12: Withdrawal — keep second line only
+            '          Falls back to first line if cell has only one line
+            '------------------------------------------------------------
+            Case "withdrawal"
+                If UBound(descLines) >= 1 Then
+                    ws.Cells(r, 4).Value = Trim(descLines(1))
+                Else
+                    ws.Cells(r, 4).Value = Trim(descLines(0))
+                End If
+
+        End Select
+
+        '----------------------------------------------------------------
+        ' Rule 7: WIRED FUNDS SENT — multi-line cell
+        '         Actual format:
+        '           Line 1: WIRED FUNDS SENT
+        '           Line 2: BENE: DWYER MATHEO
+        '           Line 3: REFNO ...
+        '           Line 4: ACCT ...
+        '         Scan lines for the one starting with "BENE:", strip
+        '         that prefix, and keep only the name that follows.
+        '         Checked outside Select Case because it is
+        '         description-based, not activity-based.
+        '----------------------------------------------------------------
+        descVal = ws.Cells(r, 4).Value
+        Dim descTrimmedWF As String
+        descTrimmedWF = Trim(descVal)
+
+        If Len(descTrimmedWF) >= 16 Then
+            If LCase(Left(descTrimmedWF, 16)) = "wired funds sent" Then
+                Dim sfLines() As String
+                sfLines = Split(descVal, Chr(10))
+                Dim sfk As Long
+                For sfk = 0 To UBound(sfLines)
+                    Dim sfLine As String
+                    sfLine = Trim(sfLines(sfk))
+                    If LCase(Left(sfLine, 5)) = "bene:" Then
+                        ws.Cells(r, 4).Value = Trim(Mid(sfLine, 6))
+                        Exit For
+                    End If
+                Next sfk
+            End If
+        End If
+
+NextRow:
+    Next r
+
+
+    '-------------------------------------------------------------------
+    ' SECTION 5: Wrap / Unwrap toggle on data cells
+    '
+    ' Toggle the entire sheet True then False to normalize all wrap
+    ' states after description editing. Then restore the disclosure
+    ' rows and title header rows which must stay wrapped.
+    '-------------------------------------------------------------------
+    ws.Cells.WrapText = True
+    ws.Cells.WrapText = False
+
+    ' Restore disclosure rows — long text needs wrap
+    ws.Rows(disc1Row).WrapText = True
+    ws.Rows(disc2Row).WrapText = True
+
+    ' Restore title header rows 1-2
+    ws.Rows("1:2").WrapText = True
+
+
+    '-------------------------------------------------------------------
+    ' Restore Excel to normal
+    '-------------------------------------------------------------------
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+
+    MsgBox "PART 3 COMPLETE." & vbNewLine & vbNewLine & _
+           "Disclosures added. Descriptions cleaned." & vbNewLine & _
+           "Wrap states normalized across all data rows.", _
+           vbInformation, "Spending Report Part 3 Done"
+
+End Sub
+
+
+'=======================================================================
+' HELPER FUNCTION: GetFirstNLines
+' Returns the first N lines of a cell value joined back with Chr(10).
+' If the cell has fewer than N lines, returns whatever is there.
+' Each line is trimmed of leading/trailing spaces.
+'=======================================================================
+Function GetFirstNLines(cellVal As String, n As Long) As String
+    Dim lines() As String
+    lines = Split(cellVal, Chr(10))
+
+    Dim result As String
+    Dim k As Long
+    Dim limit As Long
+    limit = Application.WorksheetFunction.Min(n - 1, UBound(lines))
+
+    For k = 0 To limit
+        If k = 0 Then
+            result = Trim(lines(k))
+        Else
+            result = result & Chr(10) & Trim(lines(k))
+        End If
+    Next k
+
+    GetFirstNLines = result
+End Function
