@@ -117,8 +117,9 @@ Sub SpendingReportPARTTHREE()
     '      Automated Payment (other) → keep first line only
     '  4.  Automatic Deposit      → keep first line only
     '  5.  Check                  → keep first line only
-    '  6.  Debit Card             → if VENMO *, keep first line only
+    '  6.  Debit Card             → if VENMO (with *), keep first line only
     '                               otherwise keep first two lines
+    '                               Handles spacing: "VENMO *X", "VENMO  * X"
     '  7.  WIRED FUNDS SENT       → scan for BENE: line, keep name only
     '  8.  Direct Deposit         → keep first two lines
     '  9.  Mobile Deposit         → relabel to "FUNDS RECEIVED"
@@ -189,14 +190,17 @@ Sub SpendingReportPARTTHREE()
 
             '------------------------------------------------------------
             ' Rule 6: Debit Card
-            '         If first line starts with VENMO * → keep first
-            '         line only (drop both second and third lines)
+            '         If first line starts with VENMO and contains *,
+            '         keep first line only (drop second and third lines).
+            '         Handles all spacing: "VENMO *X", "VENMO  * X", etc.
             '         Otherwise → keep first two lines
             '------------------------------------------------------------
             Case "debit card"
-                If Len(Trim(descLines(0))) >= 7 Then
-                    If LCase(Left(Trim(descLines(0)), 7)) = "venmo *" Then
-                        ws.Cells(r, 4).Value = Trim(descLines(0))
+                Dim dcFirstLine As String
+                dcFirstLine = Trim(descLines(0))
+                If Len(dcFirstLine) >= 5 Then
+                    If LCase(Left(dcFirstLine, 5)) = "venmo" And InStr(dcFirstLine, "*") > 0 Then
+                        ws.Cells(r, 4).Value = dcFirstLine
                     Else
                         ws.Cells(r, 4).Value = GetFirstNLines(descVal, 2)
                     End If

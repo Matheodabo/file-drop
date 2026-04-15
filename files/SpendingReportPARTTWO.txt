@@ -273,7 +273,6 @@ Sub SpendingReportPARTTWO()
         LineStyle:=xlContinuous, Weight:=xlThick, ColorIndex:=1
 
     ' Explicitly clear all internal horizontal borders inside the box
-    ' This removes any phantom bottom/top borders from format-painted sources
     ' Row 1 bottom / Row 2 top — same physical line
     ws.Cells(boxStartRow, 4).Borders(xlEdgeBottom).LineStyle = xlNone
     ws.Cells(boxStartRow, 5).Borders(xlEdgeBottom).LineStyle = xlNone
@@ -409,8 +408,9 @@ End Sub
 '  1.  Mobile Deposit        — key = "mobile deposit" (ignore description)
 '  2.  Netflix               — first 7 chars = "netflix" → key = "netflix"
 '  3.  Amazon.com            — first 10 chars = "amazon.com" → key = "amazon.com"
-'  4.  VENMO *               — first line starts with "VENMO *" →
-'                              key = name after the asterisk (e.g. "matheo")
+'  4.  VENMO *               — first line starts with "VENMO" and contains "*"
+'                              key = name after the asterisk
+'                              Handles all spacing: "VENMO *X", "VENMO  * X", etc.
 '  5.  WIRED FUNDS SENT      — scan lines for "BENE:", use name after it
 '                              e.g. BENE: DWYER MATHEO → key = "dwyer"
 '  6.  Funds Received +      — Activity = "Funds Received" AND description
@@ -459,15 +459,19 @@ Function GetGroupKey(descValue As String, activityValue As String) As String
     End If
 
     ' Rule 4: VENMO * — group by the name after the asterisk
-    '         e.g. "VENMO *MATHEO" → key = "matheo"
-    '              "VENMO *DWYER"  → key = "dwyer"
-    '         Uses first line only in case cell is multi-line
+    '         Handles all spacing variants:
+    '           "VENMO *DWYER", "VENMO  * DWYER", "VENMO *MATHEO", etc.
+    '         Checks if first line starts with "VENMO" then finds the *
     Dim venmoFirstLine As String
     venmoFirstLine = Trim(Split(trimmed, Chr(10))(0))
-    If Len(venmoFirstLine) >= 7 Then
-        If LCase(Left(venmoFirstLine, 7)) = "venmo *" Then
-            GetGroupKey = LCase(Trim(Mid(venmoFirstLine, 8)))
-            Exit Function
+    If Len(venmoFirstLine) >= 5 Then
+        If LCase(Left(venmoFirstLine, 5)) = "venmo" Then
+            Dim starPos As Long
+            starPos = InStr(venmoFirstLine, "*")
+            If starPos > 0 Then
+                GetGroupKey = LCase(Trim(Mid(venmoFirstLine, starPos + 1)))
+                Exit Function
+            End If
         End If
     End If
 
