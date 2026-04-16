@@ -40,11 +40,11 @@ LOG_FILE           = Path(__file__).parent / "unmatched_log.csv"
 BY_CLIENT = SAVE_LOCATION / "Savedowns" / "By Client"
 BY_FUND   = SAVE_LOCATION / "Savedowns" / "By Fund"
 
-FUZZY_THRESHOLD          = 75   # minimum score (0-100) for PDF text matching
-FILENAME_FUZZY_THRESHOLD = 70   # slightly looser for filename matching
+FUZZY_THRESHOLD          = 75
+FILENAME_FUZZY_THRESHOLD = 70
 
 # ──────────────────────────────────────────────────────────────────────
-#  KNOWN FORM TYPES  (add variants as you encounter them)
+#  KNOWN FORM TYPES
 # ──────────────────────────────────────────────────────────────────────
 FORM_KEYWORDS = {
     "1099-DIV": ["1099-DIV", "1099DIV", "1099 DIV", "DIVIDENDS AND DISTRIBUTIONS"],
@@ -54,7 +54,6 @@ FORM_KEYWORDS = {
                  "PARTNER'S SHARE", "SHAREHOLDER'S SHARE"],
 }
 
-# Noise to strip from client names
 NAME_NOISE_PATTERNS = [
     r"\s*\bCO\.?\s+TTEE\b.*",
     r"\s*\bTTEE\b.*",
@@ -91,13 +90,7 @@ def _build_lookup(df, base_path):
 
 
 def load_config():
-    """
-    Tries config.xlsx first (sheets: 'clients', 'funds').
-    Falls back to config_clients.csv + config_funds.csv.
-    Columns: canonical_name | folder_name | name_variants (semicolon-separated)
-    """
     clients, funds = {}, {}
-
     if CONFIG_XLSX.exists():
         print(f"Loading config from {CONFIG_XLSX.name}")
         for sheet, target, base in [("clients", clients, BY_CLIENT), ("funds", funds, BY_FUND)]:
@@ -126,7 +119,6 @@ def load_config():
 
     if not loaded_any:
         print("[WARNING] No config files found. Fuzzy matching disabled.")
-
     return clients, funds
 
 
@@ -155,14 +147,12 @@ def extract_last_name(name):
 
 
 def fund_folder_dest(base, client_name, year, form_type, fund_name):
-    """base / Year / FormType / LastName, FullName - Year - FormType - FundName.pdf"""
     last     = extract_last_name(client_name)
     filename = f"{last}, {client_name} - {year} - {form_type} - {fund_name}.pdf"
     return base / year / form_type / filename
 
 
 def client_folder_dest(base, fund_name, client_name, year, form_type):
-    """base / Year / FormType / FundName - ClientName - Year - FormType.pdf"""
     filename = f"{fund_name} - {client_name} - {year} - {form_type}.pdf"
     return base / year / form_type / filename
 
@@ -173,12 +163,10 @@ def client_folder_dest(base, fund_name, client_name, year, form_type):
 
 def extract_pdf_fields(pdf_path, debug=False):
     result = {"year": None, "form_type": None, "fund_name": None, "client_raw": None, "raw_text": None}
-
     try:
         with pdfplumber.open(pdf_path) as pdf:
             if not pdf.pages:
                 return result
-
             page = pdf.pages[0]
             w, h = page.width, page.height
             words = page.extract_words(x_tolerance=3, y_tolerance=3)
@@ -192,7 +180,6 @@ def extract_pdf_fields(pdf_path, debug=False):
                 print(f"TEXT :\n{full_text[:800]}")
                 print(f"{'─'*60}")
 
-            # Year: right half, top 40%
             year_candidates = []
             for word in words:
                 if re.fullmatch(r"20\d{2}", word["text"]):
@@ -201,11 +188,10 @@ def extract_pdf_fields(pdf_path, debug=False):
             if year_candidates:
                 result["year"] = year_candidates[0]
             else:
-                m = re.search(r"\b(20\d{2})\b", full_text)
+                m = re.search(r"(20\d{2})\d{4}", full_text) or re.search(r"\b(20\d{2})\b", full_text)
                 if m:
                     result["year"] = m.group(1)
 
-            # Form type: full text scan
             upper_text = full_text.upper()
             for form, keywords in FORM_KEYWORDS.items():
                 for kw in keywords:
@@ -215,7 +201,6 @@ def extract_pdf_fields(pdf_path, debug=False):
                 if result["form_type"]:
                     break
 
-            # Top-left region (left 55%, top 50%)
             top_left_words = [
                 wd for wd in words
                 if wd["x0"] < page.width * 0.55 and wd["top"] < page.height * 0.50
@@ -261,12 +246,11 @@ def extract_pdf_fields(pdf_path, debug=False):
 
     except Exception as e:
         print(f"[ERROR] Could not read {pdf_path.name}: {e}")
-
     return result
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  FILENAME PARSING -- year, form type, and config matching
+#  FILENAME PARSING
 # ══════════════════════════════════════════════════════════════════════
 
 def _clean_filename_for_matching(stem):
@@ -275,15 +259,15 @@ def _clean_filename_for_matching(stem):
         for kw in keywords:
             s = s.replace(kw.upper().replace("-", "").replace(" ", ""), " ")
             s = s.replace(kw.upper(), " ")
-    s = re.sub(r"\b20\d{2}\b", " ", s)
-    s = re.sub(r"\b\d+\b", " ", s)
+    s = re.sub(r"(20\d{2})\d{4}", " ", s)   # remove YYYYMMDD
+    s = re.sub(r"\b20\d{2}\b", " ", s)       # remove standalone year
+    s = re.sub(r"\b\d+\b", " ", s)           # remove pure number chunks
     s = re.sub(r"[_\-\.]+", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
 
 def _sliding_window_match(text, lookup, threshold):
-    """Try every 1-to-5 word window against lookup keys."""
     if not text or not lookup:
         return None
     tokens = text.split()
@@ -302,29 +286,25 @@ def _sliding_window_match(text, lookup, threshold):
     return None
 
 
-def _substring_name_match(text, lookup, min_length=4):
+def _substring_name_match(text, lookup, min_token_length=5):
     """
-    Fallback for concatenated filenames (e.g. MATDWYER).
-    Extracts the last name from each config entry and checks if it
-    appears as a substring in the cleaned filename.
-    Returns the longest match found, or None.
+    For each config entry, split into tokens and score by how many
+    appear as substrings in the (space-stripped) filename text.
+    Handles concatenated names like MATHEOPDWYER and BlackstonePrivateCreditFundAdvisory.
     """
     if not text or not lookup:
         return None
     text_upper = text.upper().replace(" ", "")
-    best_key    = None
-    best_length = 0
-    for key, entry in lookup.items():
-        # Extract last name: part before comma, or last word
-        if "," in key:
-            sort_key = key.split(",")[0].strip()
-        else:
-            sort_key = key.split()[-1].strip() if key.split() else key
-        sort_key = sort_key.upper()
-        if len(sort_key) >= min_length and sort_key in text_upper:
-            if len(sort_key) > best_length:
-                best_length = len(sort_key)
-                best_key    = key
+    best_key   = None
+    best_score = 0
+    for key in lookup:
+        tokens = [t for t in re.split(r"[\s,]+", key) if len(t) >= min_token_length]
+        if not tokens:
+            continue
+        score = sum(len(t) for t in tokens if t.upper() in text_upper)
+        if score > best_score:
+            best_score = score
+            best_key   = key
     return lookup[best_key] if best_key else None
 
 
@@ -332,7 +312,10 @@ def parse_filename(stem, clients=None, funds=None):
     result = {"year": None, "form_type": None, "fund_match": None, "client_match": None}
     upper = stem.upper()
 
-    m = re.search(r"\b(20\d{2})\b", stem)
+    # Year: YYYYMMDD first, then standalone YYYY
+    m = re.search(r"(20\d{2})\d{4}", stem)
+    if not m:
+        m = re.search(r"\b(20\d{2})\b", stem)
     if m:
         result["year"] = m.group(1)
 
@@ -356,7 +339,6 @@ def parse_filename(stem, clients=None, funds=None):
                 _sliding_window_match(cleaned, clients, FILENAME_FUZZY_THRESHOLD)
                 or _substring_name_match(cleaned, clients)
             )
-
     return result
 
 
@@ -403,7 +385,6 @@ def write_log(log_path, pdf_path, reason, fields):
 
 def process_folder(drop_folder, clients, funds, debug=False, dry_run=False):
 
-    # Deduplicate by lowercase path (fixes Windows *.pdf + *.PDF double-match)
     seen = {}
     for p in drop_folder.glob("*"):
         if p.suffix.lower() == ".pdf" and p.is_file():
@@ -416,14 +397,12 @@ def process_folder(drop_folder, clients, funds, debug=False, dry_run=False):
 
     print(f"Found {len(pdfs)} PDF(s) in {drop_folder}\n")
     init_log(LOG_FILE)
-
     ok_count      = 0
     skipped_count = 0
 
     for pdf_path in pdfs:
         print(f"Processing: {pdf_path.name}")
 
-        # Step 1: Try filename first
         fn           = parse_filename(pdf_path.stem, clients=clients, funds=funds)
         year         = fn["year"]
         form_type    = fn["form_type"]
@@ -435,7 +414,6 @@ def process_folder(drop_folder, clients, funds, debug=False, dry_run=False):
                   f"fund={'YES: ' + fund_match['canonical'] if fund_match else 'no match'} "
                   f"client={'YES: ' + client_match['canonical'] if client_match else 'no match'}")
 
-        # Step 2: Open PDF only for what filename didn't resolve
         need_pdf = not fund_match or not client_match
         if need_pdf:
             fields = extract_pdf_fields(pdf_path, debug=debug)
@@ -453,7 +431,6 @@ def process_folder(drop_folder, clients, funds, debug=False, dry_run=False):
             if debug:
                 print(f"  [PDF SKIPPED -- all info found in filename]")
 
-        # Step 3: Validate
         if not year or not form_type:
             reason = f"Could not extract: {', '.join(k for k, v in [('year', year), ('form_type', form_type)] if not v)}"
             print(f"  [SKIP] {reason}")
@@ -475,13 +452,11 @@ def process_folder(drop_folder, clients, funds, debug=False, dry_run=False):
             skipped_count += 1
             continue
 
-        # Step 4: Build destinations (includes Year / FormType subfolders)
         fund_canonical   = fund_match["canonical"]
         client_canonical = client_match["canonical"]
         fund_dest   = fund_folder_dest(fund_match["folder"],   client_canonical, year, form_type, fund_canonical)
         client_dest = client_folder_dest(client_match["folder"], fund_canonical, client_canonical, year, form_type)
 
-        # Step 5: Report
         print(f"  Client  : {client_canonical}")
         print(f"  Fund    : {fund_canonical}")
         print(f"  Year    : {year}  |  Form: {form_type}")
@@ -494,7 +469,6 @@ def process_folder(drop_folder, clients, funds, debug=False, dry_run=False):
             print()
             continue
 
-        # Step 6: Copy (creates all subfolders automatically)
         errors = []
         for dest in (fund_dest, client_dest):
             try:
@@ -512,7 +486,6 @@ def process_folder(drop_folder, clients, funds, debug=False, dry_run=False):
         else:
             print(f"  [OK]")
             ok_count += 1
-
         print()
 
     print(f"\nDone. {ok_count} processed, {skipped_count} skipped/errors.")
