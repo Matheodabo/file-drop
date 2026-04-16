@@ -1,0 +1,473 @@
+"""
+Tax Document Renaming & Savedown Automation
+============================================
+Renames and copies tax documents (1099-DIVs, K-1s, etc.) into:
+
+  Savedowns/By Fund/    <FundFolder>/  LastName, FullName - Year - FormType - FundName.pdf
+  Savedowns/By Client/  <ClientFolder>/ FundName - ClientName - Year - FormType.pdf
+
+Usage:
+  python "Tax Document Renaming & Savedown Automation.py"            # normal run
+  python "Tax Document Renaming & Savedown Automation.py" --debug    # print extractions, no file moves
+  python "Tax Document Renaming & Savedown Automation.py" --dry-run  # show what would happen, no file moves
+"""
+
+import re
+import sys
+import csv
+import shutil
+from pathlib import Path
+from datetime import datetime
+
+import pandas as pd
+import pdfplumber
+from rapidfuzz import process, fuzz
+
+# ══════════════════════════════════════════════════════════════════════
+#  CONFIGURATION  — edit these paths before running
+# ══════════════════════════════════════════════════════════════════════
+
+SAVE_LOCATION = Path(r"C:\path\to\Save Location")   # root folder containing Savedowns/
+DROP_FOLDER   = Path(r"C:\path\to\drop folder")      # where you bulk-save downloads
+
+# ══════════════════════════════════════════════════════════════════════
+
+CONFIG_XLSX        = Path(__file__).parent / "config.xlsx"
+CONFIG_CSV_CLIENTS = Path(__file__).parent / "config_clients.csv"
+CONFIG_CSV_FUNDS   = Path(__file__).parent / "config_funds.csv"
+LOG_FILE           = Path(__file__).parent / "unmatched_log.csv"
+
+BY_CLIENT = SAVE_LOCATION / "Savedowns" / "By Client"
+BY_FUND   = SAVE_LOCATION / "Savedowns" / "By Fund"
+
+FUZZY_THRESHOLD = 75   # minimum score (0-100) to accept a fuzzy match
+
+# ──────────────────────────────────────────────────────────────────────
+#  KNOWN FORM TYPES  (add variants as you encounter them)
+# ──────────────────────────────────────────────────────────────────────
+FORM_KEYWORDS = {
+    "1099-DIV": ["1099-DIV", "1099DIV", "1099 DIV", "DIVIDENDS AND DISTRIBUTIONS"],
+    "1099-INT": ["1099-INT", "1099INT", "1099 INT", "INTEREST INCOME"],
+    "1099-B":   ["1099-B",  "1099B",   "PROCEEDS FROM BROKER"],
+    "K-1":      ["SCHEDULE K-1", "SCHEDULE K1", "K-1", "K1",
+                 "PARTNER'S SHARE", "SHAREHOLDER'S SHARE"],
+}
+
+# Noise suffixes/lines to strip from client names before saving
+NAME_NOISE_PATTERNS = [
+    r"\s*\bCO\.?\s+TTEE\b.*",          # CO TTEE and everything after
+    r"\s*\bTTEE\b.*",                   # TTEE and everything after
+    r"\s*\bTRUSTEE\b.*",
+    r"\s*\bC\s*/?\s*O\b.*",            # C/O address lines
+    r"\s*\bATTN\b.*",
+    r"\s*\(\s*\d{4}\s*\).*",           # (year) suffixes
+    r"\s*\b\d{4}\b\s+\w+\s+TRUST.*",  # "1998 THEO TRUST" style lines
+    r"\s*\bLLC\b.*",
+    r"\s*\bINC\.?\b.*",
+    r"\s*\bREVOCABLE\b.*",
+    r"\s*\bIRREVOCABLE\b.*",
+    r"\s*\bLIVING\s+TRUST\b.*",
+    r"\s*\bFAMILY\s+TRUST\b.*",
+]
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  CONFIG LOADER
+# ══════════════════════════════════════════════════════════════════════
+
+def _build_lookup(df, base_path):
+    """Turn a clients or funds DataFrame into a fuzzy-match lookup dict."""
+    lookup = {}
+    for _, row in df.iterrows():
+        canonical = row.get("canonical_name", "").strip()
+        folder    = row.get("folder_name", canonical).strip()
+        variants  = row.get("name_variants", "").strip()
+        if not canonical:
+            continue
+        all_names = [canonical] + [v.strip() for v in variants.split(";") if v.strip()]
+        for name in all_names:
+            lookup[name.upper()] = {
+                "canonical": canonical,
+                "folder":    base_path / folder,
+            }
+    return lookup
+
+
+def load_config():
+    """
+    Load client and fund config. Tries config.xlsx first (two sheets: 'clients', 'funds').
+    Falls back to config_clients.csv + config_funds.csv if xlsx is not present.
+
+    Columns for both sources: canonical_name | folder_name | name_variants (semicolon-separated)
+    """
+    clients, funds = {}, {}
+
+    if CONFIG_XLSX.exists():
+        print(f"Loading config from {CONFIG_XLSX.name}")
+        for sheet, target, base in [("clients", clients, BY_CLIENT), ("funds", funds, BY_FUND)]:
+            try:
+                df = pd.read_excel(CONFIG_XLSX, sheet_name=sheet, dtype=str).fillna("")
+                target.update(_build_lookup(df, base))
+            except Exception as e:
+                print(f"[WARNING] Could not read '{sheet}' sheet from xlsx: {e}")
+        return clients, funds
+
+    # Fallback: CSV files
+    loaded_any = False
+    for csv_path, target, base, label in [
+        (CONFIG_CSV_CLIENTS, clients, BY_CLIENT, "clients"),
+        (CONFIG_CSV_FUNDS,   funds,   BY_FUND,   "funds"),
+    ]:
+        if csv_path.exists():
+            print(f"Loading {label} config from {csv_path.name}")
+            try:
+                df = pd.read_csv(csv_path, dtype=str).fillna("")
+                target.update(_build_lookup(df, base))
+                loaded_any = True
+            except Exception as e:
+                print(f"[WARNING] Could not read {csv_path.name}: {e}")
+        else:
+            print(f"[WARNING] {csv_path.name} not found.")
+
+    if not loaded_any:
+        print("[WARNING] No config files found. Fuzzy matching disabled.")
+
+    return clients, funds
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  NAME CLEANING
+# ══════════════════════════════════════════════════════════════════════
+
+def clean_client_name(raw):
+    """
+    Given a raw multi-line client name block, return the cleaned primary name.
+    e.g. "JOHN SMITH CO TTEE\n1998 THEO TRUST\nC/O BLABLA" -> "John Smith"
+    """
+    first_line = ""
+    for line in raw.strip().splitlines():
+        line = line.strip()
+        if line:
+            first_line = line
+            break
+
+    if not first_line:
+        return raw.strip()
+
+    cleaned = first_line.upper()
+    for pattern in NAME_NOISE_PATTERNS:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
+
+    return cleaned.title().strip()
+
+
+def extract_last_name(name):
+    """Return the last word of the name for alphabetical sorting."""
+    parts = name.strip().split()
+    return parts[-1] if parts else name
+
+
+def fund_folder_filename(client_name, year, form_type, fund_name):
+    """LastName, FullName - Year - FormType - FundName.pdf"""
+    last = extract_last_name(client_name)
+    return f"{last}, {client_name} - {year} - {form_type} - {fund_name}.pdf"
+
+
+def client_folder_filename(fund_name, client_name, year, form_type):
+    """FundName - ClientName - Year - FormType.pdf"""
+    return f"{fund_name} - {client_name} - {year} - {form_type}.pdf"
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  PDF EXTRACTION
+# ══════════════════════════════════════════════════════════════════════
+
+def extract_pdf_fields(pdf_path, debug=False):
+    """
+    Open a PDF and attempt to extract:
+      - year       (top-right region)
+      - form_type  (anywhere on first page)
+      - fund_name  (top-left region, first text block)
+      - client_raw (top-left region, below fund block)
+    """
+    result = {
+        "year":       None,
+        "form_type":  None,
+        "fund_name":  None,
+        "client_raw": None,
+        "raw_text":   None,
+    }
+
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            if not pdf.pages:
+                return result
+
+            page = pdf.pages[0]
+            w, h = page.width, page.height
+
+            words = page.extract_words(x_tolerance=3, y_tolerance=3)
+            full_text = page.extract_text() or ""
+            result["raw_text"] = full_text
+
+            if debug:
+                print(f"\n{'─'*60}")
+                print(f"FILE : {pdf_path.name}")
+                print(f"SIZE : {w:.0f} x {h:.0f} pts")
+                print(f"TEXT :\n{full_text[:800]}")
+                print(f"{'─'*60}")
+
+            # Year: 4-digit number in right half, top 40%
+            year_candidates = []
+            for word in words:
+                if re.fullmatch(r"20\d{2}", word["text"]):
+                    if word["x0"] > w * 0.5 and word["top"] < h * 0.4:
+                        year_candidates.append(word["text"])
+            if year_candidates:
+                result["year"] = year_candidates[0]
+            else:
+                m = re.search(r"\b(20\d{2})\b", full_text)
+                if m:
+                    result["year"] = m.group(1)
+
+            # Form type: scan full text for known keywords
+            upper_text = full_text.upper()
+            for form, keywords in FORM_KEYWORDS.items():
+                for kw in keywords:
+                    if kw.upper() in upper_text:
+                        result["form_type"] = form
+                        break
+                if result["form_type"]:
+                    break
+
+            # Top-left region: left 55% of page, top 50% of height
+            top_left_words = [
+                wd for wd in words
+                if wd["x0"] < page.width * 0.55 and wd["top"] < page.height * 0.50
+            ]
+            top_left_words.sort(key=lambda wd: (wd["top"], wd["x0"]))
+
+            # Group into lines (words within 5pts vertical are on the same line)
+            lines = []
+            current_line = []
+            current_top = None
+            for word in top_left_words:
+                if current_top is None or abs(word["top"] - current_top) <= 5:
+                    current_line.append(word["text"])
+                    current_top = word["top"]
+                else:
+                    if current_line:
+                        lines.append(" ".join(current_line))
+                    current_line = [word["text"]]
+                    current_top = word["top"]
+            if current_line:
+                lines.append(" ".join(current_line))
+
+            if debug:
+                print(f"TOP-LEFT LINES: {lines}")
+
+            if lines:
+                result["fund_name"] = lines[0].strip()
+
+            # Client name: after the address block (address lines contain digits)
+            address_done = False
+            client_lines = []
+            for line in lines[1:]:
+                upper = line.upper().strip()
+                is_address = bool(re.search(r"\d", line)) or len(line.split()) <= 1
+                if not address_done and is_address:
+                    continue
+                else:
+                    address_done = True
+                    if re.match(r"C\s*/?\s*O\b", upper):
+                        break
+                    client_lines.append(line)
+
+            if client_lines:
+                result["client_raw"] = "\n".join(client_lines)
+
+    except Exception as e:
+        print(f"[ERROR] Could not read {pdf_path.name}: {e}")
+
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  FILENAME PARSING (fallback)
+# ══════════════════════════════════════════════════════════════════════
+
+def parse_filename(filename):
+    """Try to extract year and form type from the raw filename as a fallback."""
+    result = {"year": None, "form_type": None}
+    upper = filename.upper()
+
+    m = re.search(r"\b(20\d{2})\b", filename)
+    if m:
+        result["year"] = m.group(1)
+
+    for form, keywords in FORM_KEYWORDS.items():
+        for kw in keywords:
+            if kw.upper().replace("-", "").replace(" ", "") in upper.replace("-", "").replace(" ", ""):
+                result["form_type"] = form
+                break
+        if result["form_type"]:
+            break
+
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  FUZZY MATCHING
+# ══════════════════════════════════════════════════════════════════════
+
+def fuzzy_match(query, lookup, threshold=FUZZY_THRESHOLD):
+    """Find the best match for query in the lookup dict keys."""
+    if not query or not lookup:
+        return None
+
+    keys = list(lookup.keys())
+    match, score, _ = process.extractOne(query.upper(), keys, scorer=fuzz.token_sort_ratio)
+
+    if score >= threshold:
+        return lookup[match]
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  LOGGING
+# ══════════════════════════════════════════════════════════════════════
+
+def init_log(log_path):
+    if not log_path.exists():
+        with open(log_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["timestamp", "file", "reason", "extracted_year",
+                             "extracted_form", "extracted_fund", "extracted_client"])
+
+
+def write_log(log_path, pdf_path, reason, fields):
+    with open(log_path, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            pdf_path.name,
+            reason,
+            fields.get("year", ""),
+            fields.get("form_type", ""),
+            fields.get("fund_name", ""),
+            fields.get("client_raw", ""),
+        ])
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  MAIN PROCESSING LOOP
+# ══════════════════════════════════════════════════════════════════════
+
+def process_folder(drop_folder, clients, funds, debug=False, dry_run=False):
+
+    pdfs = list(drop_folder.glob("*.pdf")) + list(drop_folder.glob("*.PDF"))
+    if not pdfs:
+        print(f"No PDFs found in {drop_folder}")
+        return
+
+    print(f"Found {len(pdfs)} PDF(s) in {drop_folder}\n")
+    init_log(LOG_FILE)
+
+    ok_count      = 0
+    skipped_count = 0
+
+    for pdf_path in pdfs:
+        print(f"Processing: {pdf_path.name}")
+
+        fields = extract_pdf_fields(pdf_path, debug=debug)
+
+        fn_fields = parse_filename(pdf_path.stem)
+        if not fields["year"]:
+            fields["year"] = fn_fields["year"]
+        if not fields["form_type"]:
+            fields["form_type"] = fn_fields["form_type"]
+
+        missing = [k for k in ("year", "form_type", "fund_name", "client_raw") if not fields.get(k)]
+        if missing:
+            reason = f"Could not extract: {', '.join(missing)}"
+            print(f"  [SKIP] {reason}")
+            write_log(LOG_FILE, pdf_path, reason, fields)
+            skipped_count += 1
+            continue
+
+        client_name = clean_client_name(fields["client_raw"])
+
+        fund_match   = fuzzy_match(fields["fund_name"], funds)
+        client_match = fuzzy_match(client_name, clients)
+
+        fund_canonical   = fund_match["canonical"]   if fund_match   else fields["fund_name"]
+        client_canonical = client_match["canonical"] if client_match else client_name
+        fund_folder_path   = fund_match["folder"]    if fund_match   else BY_FUND   / fund_canonical
+        client_folder_path = client_match["folder"]  if client_match else BY_CLIENT / client_canonical
+
+        year      = fields["year"]
+        form_type = fields["form_type"]
+
+        fund_filename   = fund_folder_filename(client_canonical, year, form_type, fund_canonical)
+        client_filename = client_folder_filename(fund_canonical, client_canonical, year, form_type)
+
+        fund_dest   = fund_folder_path   / fund_filename
+        client_dest = client_folder_path / client_filename
+
+        print(f"  Client  : {client_canonical}")
+        print(f"  Fund    : {fund_canonical}")
+        print(f"  Year    : {year}  |  Form: {form_type}")
+        print(f"  -> Fund folder  : {fund_dest}")
+        print(f"  -> Client folder: {client_dest}")
+
+        if not fund_match:
+            print(f"  [WARN] Fund not in config -- folder may not exist: {fund_folder_path}")
+        if not client_match:
+            print(f"  [WARN] Client not in config -- folder may not exist: {client_folder_path}")
+
+        if dry_run or debug:
+            print(f"  [DRY RUN -- no files moved]")
+            ok_count += 1
+            continue
+
+        errors = []
+        for dest in (fund_dest, client_dest):
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(pdf_path, dest)
+            except Exception as e:
+                errors.append(str(e))
+
+        if errors:
+            reason = "; ".join(errors)
+            print(f"  [ERROR] {reason}")
+            write_log(LOG_FILE, pdf_path, reason, fields)
+            skipped_count += 1
+        else:
+            print(f"  [OK]")
+            ok_count += 1
+
+        print()
+
+    print(f"\nDone. {ok_count} processed, {skipped_count} skipped/errors.")
+    if skipped_count:
+        print(f"See {LOG_FILE} for details on skipped files.")
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  ENTRY POINT
+# ══════════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    debug   = "--debug"   in sys.argv
+    dry_run = "--dry-run" in sys.argv
+
+    if debug:
+        print("=== DEBUG MODE -- no files will be moved ===\n")
+    elif dry_run:
+        print("=== DRY RUN -- no files will be moved ===\n")
+
+    clients, funds = load_config()
+    print(f"Config loaded: {len(clients)} client entries, {len(funds)} fund entries.\n")
+
+    process_folder(DROP_FOLDER, clients, funds, debug=debug, dry_run=dry_run)
