@@ -1,19 +1,7 @@
 [
   {
-    "name": "config_clients.csv",
-    "label": "config_clients.csv",
-    "description": "",
-    "date": "2026-04-16"
-  },
-  {
-    "name": "config_funds.csv",
-    "label": "config_funds.csv",
-    "description": "",
-    "date": "2026-04-16"
-  },
-  {
-    "name": "TAX_AUTOMATION_CODE_LATEST.txt",
-    "label": "TAX_AUTOMATION_CODE_LATEST.txt",
+    "name": "LIST_FOLDERS_CODE.txt",
+    "label": "LIST_FOLDERS_CODE.txt",
     "description": "",
     "date": "2026-04-16"
   }
