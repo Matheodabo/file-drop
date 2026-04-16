@@ -27,8 +27,8 @@ from rapidfuzz import process, fuzz
 #  CONFIGURATION  -- edit these paths before running
 # ══════════════════════════════════════════════════════════════════════
 
-SAVE_LOCATION = Path(r"C:\path\to\Save Location")   # root folder containing Savedowns/
-DROP_FOLDER   = Path(r"C:\path\to\drop folder")      # where you bulk-save downloads
+SAVE_LOCATION = Path(r"C:\path\to\Save Location")
+DROP_FOLDER   = Path(r"C:\path\to\drop folder")
 
 # ══════════════════════════════════════════════════════════════════════
 
@@ -43,9 +43,6 @@ BY_FUND   = SAVE_LOCATION / "Savedowns" / "By Fund"
 FUZZY_THRESHOLD          = 75
 FILENAME_FUZZY_THRESHOLD = 70
 
-# ──────────────────────────────────────────────────────────────────────
-#  KNOWN FORM TYPES
-# ──────────────────────────────────────────────────────────────────────
 FORM_KEYWORDS = {
     "1099-DIV": ["1099-DIV", "1099DIV", "1099 DIV", "DIVIDENDS AND DISTRIBUTIONS"],
     "1099-INT": ["1099-INT", "1099INT", "1099 INT", "INTEREST INCOME"],
@@ -259,9 +256,9 @@ def _clean_filename_for_matching(stem):
         for kw in keywords:
             s = s.replace(kw.upper().replace("-", "").replace(" ", ""), " ")
             s = s.replace(kw.upper(), " ")
-    s = re.sub(r"(20\d{2})\d{4}", " ", s)   # remove YYYYMMDD
-    s = re.sub(r"\b20\d{2}\b", " ", s)       # remove standalone year
-    s = re.sub(r"\b\d+\b", " ", s)           # remove pure number chunks
+    s = re.sub(r"(20\d{2})\d{4}", " ", s)
+    s = re.sub(r"\b20\d{2}\b", " ", s)
+    s = re.sub(r"\b\d+\b", " ", s)
     s = re.sub(r"[_\-\.]+", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
@@ -287,11 +284,6 @@ def _sliding_window_match(text, lookup, threshold):
 
 
 def _substring_name_match(text, lookup, min_token_length=5):
-    """
-    For each config entry, split into tokens and score by how many
-    appear as substrings in the (space-stripped) filename text.
-    Handles concatenated names like MATHEOPDWYER and BlackstonePrivateCreditFundAdvisory.
-    """
     if not text or not lookup:
         return None
     text_upper = text.upper().replace(" ", "")
@@ -308,11 +300,54 @@ def _substring_name_match(text, lookup, min_token_length=5):
     return lookup[best_key] if best_key else None
 
 
+def _get_ambiguous_fund_candidates(cleaned, lookup, min_token_length=5, ambiguity_ratio=0.65):
+    """
+    Returns all fund keys scoring >= ambiguity_ratio * top_score from filename.
+    When multiple funds share a common prefix (e.g. multiple Blackstone funds),
+    we flag them and verify against the PDF instead of guessing.
+    """
+    if not cleaned or not lookup:
+        return []
+    text_upper = cleaned.upper().replace(" ", "")
+    scored = []
+    for key in lookup:
+        tokens = [t for t in re.split(r"[\s,]+", key) if len(t) >= min_token_length]
+        score  = sum(len(t) for t in tokens if t.upper() in text_upper)
+        if score > 0:
+            scored.append((score, key))
+    if not scored:
+        return []
+    max_score = max(s for s, _ in scored)
+    return [key for s, key in scored if s >= max_score * ambiguity_ratio]
+
+
+def _resolve_fund_from_pdf(pdf_text, candidate_keys, lookup):
+    """
+    Given ambiguous fund candidates, search the actual PDF text for each
+    candidate's tokens. The fund whose name appears in the document wins.
+    """
+    if not pdf_text or not candidate_keys:
+        return None
+    upper = pdf_text.upper()
+    best_key   = None
+    best_score = 0
+    for key in candidate_keys:
+        tokens = [t for t in re.split(r"[\s,]+", key) if len(t) >= 4]
+        score  = sum(len(t) for t in tokens if t.upper() in upper)
+        if score > best_score:
+            best_score = score
+            best_key   = key
+    return lookup[best_key] if best_key else None
+
+
 def parse_filename(stem, clients=None, funds=None):
-    result = {"year": None, "form_type": None, "fund_match": None, "client_match": None}
+    result = {
+        "year": None, "form_type": None,
+        "fund_match": None, "client_match": None,
+        "ambiguous_fund_keys": [],
+    }
     upper = stem.upper()
 
-    # Year: YYYYMMDD first, then standalone YYYY
     m = re.search(r"(20\d{2})\d{4}", stem)
     if not m:
         m = re.search(r"\b(20\d{2})\b", stem)
@@ -330,10 +365,17 @@ def parse_filename(stem, clients=None, funds=None):
     cleaned = _clean_filename_for_matching(stem)
     if cleaned:
         if funds:
-            result["fund_match"] = (
-                _sliding_window_match(cleaned, funds, FILENAME_FUZZY_THRESHOLD)
-                or _substring_name_match(cleaned, funds)
-            )
+            candidates = _get_ambiguous_fund_candidates(cleaned, funds)
+            if len(candidates) > 1:
+                result["ambiguous_fund_keys"] = candidates
+                result["fund_match"] = funds.get(candidates[0])  # tentative, will be verified in PDF
+            elif len(candidates) == 1:
+                result["fund_match"] = funds.get(candidates[0])
+            else:
+                result["fund_match"] = (
+                    _sliding_window_match(cleaned, funds, FILENAME_FUZZY_THRESHOLD)
+                    or _substring_name_match(cleaned, funds)
+                )
         if clients:
             result["client_match"] = (
                 _sliding_window_match(cleaned, clients, FILENAME_FUZZY_THRESHOLD)
@@ -403,24 +445,37 @@ def process_folder(drop_folder, clients, funds, debug=False, dry_run=False):
     for pdf_path in pdfs:
         print(f"Processing: {pdf_path.name}")
 
-        fn           = parse_filename(pdf_path.stem, clients=clients, funds=funds)
-        year         = fn["year"]
-        form_type    = fn["form_type"]
-        fund_match   = fn["fund_match"]
-        client_match = fn["client_match"]
+        # Step 1: Try filename first
+        fn              = parse_filename(pdf_path.stem, clients=clients, funds=funds)
+        year            = fn["year"]
+        form_type       = fn["form_type"]
+        fund_match      = fn["fund_match"]
+        client_match    = fn["client_match"]
+        ambiguous_funds = fn["ambiguous_fund_keys"]
 
         if debug:
+            amb_note = f" (AMBIGUOUS x{len(ambiguous_funds)} -- will verify in PDF)" if ambiguous_funds else ""
             print(f"  [FILENAME] year={year} form={form_type} "
-                  f"fund={'YES: ' + fund_match['canonical'] if fund_match else 'no match'} "
+                  f"fund={'YES: ' + fund_match['canonical'] if fund_match else 'no match'}{amb_note} "
                   f"client={'YES: ' + client_match['canonical'] if client_match else 'no match'}")
 
-        need_pdf = not fund_match or not client_match
+        # Step 2: Open PDF when fund ambiguous, fund missing, or client missing
+        need_pdf = bool(ambiguous_funds) or not fund_match or not client_match
         if need_pdf:
             fields = extract_pdf_fields(pdf_path, debug=debug)
             if not year:
                 year = fields["year"]
             if not form_type:
                 form_type = fields["form_type"]
+
+            # Resolve ambiguous fund by searching PDF for the actual fund name
+            if ambiguous_funds and fields.get("raw_text"):
+                resolved = _resolve_fund_from_pdf(fields["raw_text"], ambiguous_funds, funds)
+                if resolved:
+                    fund_match = resolved
+                    if debug:
+                        print(f"  [PDF VERIFY] Fund resolved to: {fund_match['canonical']}")
+
             if not fund_match and fields.get("fund_name"):
                 fund_match = fuzzy_match(fields["fund_name"], funds)
             if not client_match and fields.get("client_raw"):
@@ -431,6 +486,7 @@ def process_folder(drop_folder, clients, funds, debug=False, dry_run=False):
             if debug:
                 print(f"  [PDF SKIPPED -- all info found in filename]")
 
+        # Step 3: Validate
         if not year or not form_type:
             reason = f"Could not extract: {', '.join(k for k, v in [('year', year), ('form_type', form_type)] if not v)}"
             print(f"  [SKIP] {reason}")
@@ -452,11 +508,13 @@ def process_folder(drop_folder, clients, funds, debug=False, dry_run=False):
             skipped_count += 1
             continue
 
+        # Step 4: Build destinations
         fund_canonical   = fund_match["canonical"]
         client_canonical = client_match["canonical"]
         fund_dest   = fund_folder_dest(fund_match["folder"],   client_canonical, year, form_type, fund_canonical)
         client_dest = client_folder_dest(client_match["folder"], fund_canonical, client_canonical, year, form_type)
 
+        # Step 5: Report
         print(f"  Client  : {client_canonical}")
         print(f"  Fund    : {fund_canonical}")
         print(f"  Year    : {year}  |  Form: {form_type}")
@@ -469,6 +527,7 @@ def process_folder(drop_folder, clients, funds, debug=False, dry_run=False):
             print()
             continue
 
+        # Step 6: Copy
         errors = []
         for dest in (fund_dest, client_dest):
             try:
