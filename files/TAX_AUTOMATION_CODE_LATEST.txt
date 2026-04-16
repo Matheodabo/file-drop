@@ -3,8 +3,8 @@ Tax Document Renaming & Savedown Automation
 ============================================
 Renames and copies tax documents (1099-DIVs, K-1s, etc.) into:
 
-  Savedowns/By Fund/    <FundFolder>/  LastName, FullName - Year - FormType - FundName.pdf
-  Savedowns/By Client/  <ClientFolder>/ FundName - ClientName - Year - FormType.pdf
+  Savedowns/By Fund/    <Fund>/ Year / FormType / LastName, FullName - Year - FormType - FundName.pdf
+  Savedowns/By Client/  <Client>/ Year / FormType / FundName - ClientName - Year - FormType.pdf
 
 Usage:
   python "Tax Document Renaming & Savedown Automation.py"            # normal run
@@ -24,7 +24,7 @@ import pdfplumber
 from rapidfuzz import process, fuzz
 
 # ══════════════════════════════════════════════════════════════════════
-#  CONFIGURATION  — edit these paths before running
+#  CONFIGURATION  -- edit these paths before running
 # ══════════════════════════════════════════════════════════════════════
 
 SAVE_LOCATION = Path(r"C:\path\to\Save Location")   # root folder containing Savedowns/
@@ -154,13 +154,17 @@ def extract_last_name(name):
     return parts[-1] if parts else name
 
 
-def fund_folder_filename(client_name, year, form_type, fund_name):
-    last = extract_last_name(client_name)
-    return f"{last}, {client_name} - {year} - {form_type} - {fund_name}.pdf"
+def fund_folder_dest(base, client_name, year, form_type, fund_name):
+    """base / Year / FormType / LastName, FullName - Year - FormType - FundName.pdf"""
+    last     = extract_last_name(client_name)
+    filename = f"{last}, {client_name} - {year} - {form_type} - {fund_name}.pdf"
+    return base / year / form_type / filename
 
 
-def client_folder_filename(fund_name, client_name, year, form_type):
-    return f"{fund_name} - {client_name} - {year} - {form_type}.pdf"
+def client_folder_dest(base, fund_name, client_name, year, form_type):
+    """base / Year / FormType / FundName - ClientName - Year - FormType.pdf"""
+    filename = f"{fund_name} - {client_name} - {year} - {form_type}.pdf"
+    return base / year / form_type / filename
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -262,7 +266,7 @@ def extract_pdf_fields(pdf_path, debug=False):
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  FILENAME PARSING — year, form type, and config matching
+#  FILENAME PARSING -- year, form type, and config matching
 # ══════════════════════════════════════════════════════════════════════
 
 def _clean_filename_for_matching(stem):
@@ -279,6 +283,7 @@ def _clean_filename_for_matching(stem):
 
 
 def _sliding_window_match(text, lookup, threshold):
+    """Try every 1-to-5 word window against lookup keys."""
     if not text or not lookup:
         return None
     tokens = text.split()
@@ -295,6 +300,32 @@ def _sliding_window_match(text, lookup, threshold):
     if best_score >= threshold:
         return lookup[best_match]
     return None
+
+
+def _substring_name_match(text, lookup, min_length=4):
+    """
+    Fallback for concatenated filenames (e.g. MATDWYER).
+    Extracts the last name from each config entry and checks if it
+    appears as a substring in the cleaned filename.
+    Returns the longest match found, or None.
+    """
+    if not text or not lookup:
+        return None
+    text_upper = text.upper().replace(" ", "")
+    best_key    = None
+    best_length = 0
+    for key, entry in lookup.items():
+        # Extract last name: part before comma, or last word
+        if "," in key:
+            sort_key = key.split(",")[0].strip()
+        else:
+            sort_key = key.split()[-1].strip() if key.split() else key
+        sort_key = sort_key.upper()
+        if len(sort_key) >= min_length and sort_key in text_upper:
+            if len(sort_key) > best_length:
+                best_length = len(sort_key)
+                best_key    = key
+    return lookup[best_key] if best_key else None
 
 
 def parse_filename(stem, clients=None, funds=None):
@@ -316,9 +347,15 @@ def parse_filename(stem, clients=None, funds=None):
     cleaned = _clean_filename_for_matching(stem)
     if cleaned:
         if funds:
-            result["fund_match"] = _sliding_window_match(cleaned, funds, FILENAME_FUZZY_THRESHOLD)
+            result["fund_match"] = (
+                _sliding_window_match(cleaned, funds, FILENAME_FUZZY_THRESHOLD)
+                or _substring_name_match(cleaned, funds)
+            )
         if clients:
-            result["client_match"] = _sliding_window_match(cleaned, clients, FILENAME_FUZZY_THRESHOLD)
+            result["client_match"] = (
+                _sliding_window_match(cleaned, clients, FILENAME_FUZZY_THRESHOLD)
+                or _substring_name_match(cleaned, clients)
+            )
 
     return result
 
@@ -438,11 +475,11 @@ def process_folder(drop_folder, clients, funds, debug=False, dry_run=False):
             skipped_count += 1
             continue
 
-        # Step 4: Build filenames
+        # Step 4: Build destinations (includes Year / FormType subfolders)
         fund_canonical   = fund_match["canonical"]
         client_canonical = client_match["canonical"]
-        fund_dest   = fund_match["folder"]   / fund_folder_filename(client_canonical, year, form_type, fund_canonical)
-        client_dest = client_match["folder"] / client_folder_filename(fund_canonical, client_canonical, year, form_type)
+        fund_dest   = fund_folder_dest(fund_match["folder"],   client_canonical, year, form_type, fund_canonical)
+        client_dest = client_folder_dest(client_match["folder"], fund_canonical, client_canonical, year, form_type)
 
         # Step 5: Report
         print(f"  Client  : {client_canonical}")
@@ -457,7 +494,7 @@ def process_folder(drop_folder, clients, funds, debug=False, dry_run=False):
             print()
             continue
 
-        # Step 6: Copy
+        # Step 6: Copy (creates all subfolders automatically)
         errors = []
         for dest in (fund_dest, client_dest):
             try:
