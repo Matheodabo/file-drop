@@ -78,11 +78,28 @@ NAME_NOISE_PATTERNS = [
 
 
 # ══════════════════════════════════════════════════════════════════════
+#  NAME NORMALIZATION  (applied to both stored keys and queries)
+# ══════════════════════════════════════════════════════════════════════
+
+def _normalize_name(s: str) -> str:
+    """Normalize a name for fuzzy matching.
+    & → AND, strip commas/periods, collapse whitespace.
+    Applied consistently to both lookup keys and query strings so that
+    'Saperstein, Ron and Amy' and 'Amy & Ron Saperstein' compare cleanly."""
+    s = s.upper()
+    s = s.replace("&", "AND")
+    s = re.sub(r"[,\.]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+# ══════════════════════════════════════════════════════════════════════
 #  CONFIG LOADER
 # ══════════════════════════════════════════════════════════════════════
 
 def _build_lookup(df: "pd.DataFrame", base_path: Path) -> dict:
-    """Turn a clients or funds DataFrame into a fuzzy-match lookup dict."""
+    """Turn a clients or funds DataFrame into a fuzzy-match lookup dict.
+    Keys are stored normalized so matching is not sensitive to commas or &/and."""
     lookup = {}
     for _, row in df.iterrows():
         canonical = row.get("canonical_name", "").strip()
@@ -92,7 +109,7 @@ def _build_lookup(df: "pd.DataFrame", base_path: Path) -> dict:
             continue
         all_names = [canonical] + [v.strip() for v in variants.split(";") if v.strip()]
         for name in all_names:
-            lookup[name.upper()] = {
+            lookup[_normalize_name(name)] = {
                 "canonical": canonical,
                 "folder":    base_path / folder,
             }
@@ -449,7 +466,7 @@ def _sliding_window_match(text: str, lookup: dict, threshold: int) -> dict | Non
     if not text or not lookup:
         return None
 
-    tokens = text.split()
+    tokens = _normalize_name(text).split()
     keys   = list(lookup.keys())
     best_score = 0
     best_match = None
@@ -477,12 +494,12 @@ def _substring_name_match(text: str, lookup: dict, min_token_length: int = 5) ->
     if not text or not lookup:
         return None
 
-    text_upper = text.upper().replace(" ", "")
+    text_upper = _normalize_name(text).replace(" ", "")
     best_key   = None
     best_score = 0
 
     for key in lookup:
-        tokens = [t for t in re.split(r"[\s,]+", key) if len(t) >= min_token_length]
+        tokens = [t for t in re.split(r"\s+", key) if len(t) >= min_token_length]
         if not tokens:
             continue
         score = sum(len(t) for t in tokens if t.upper() in text_upper)
@@ -504,11 +521,11 @@ def _get_ambiguous_fund_candidates(cleaned: str, lookup: dict,
     if not cleaned or not lookup:
         return []
 
-    text_upper = cleaned.upper().replace(" ", "")
+    text_upper = _normalize_name(cleaned).replace(" ", "")
     scored = []
 
     for key in lookup:
-        tokens = [t for t in re.split(r"[\s,]+", key) if len(t) >= min_token_length]
+        tokens = [t for t in re.split(r"\s+", key) if len(t) >= min_token_length]
         score  = sum(len(t) for t in tokens if t.upper() in text_upper)
         if score > 0:
             scored.append((score, key))
@@ -609,19 +626,26 @@ def parse_filename(stem: str, clients: dict = None, funds: dict = None) -> dict:
 #  FUZZY MATCHING
 # ══════════════════════════════════════════════════════════════════════
 
-def fuzzy_match(query: str, lookup: dict, threshold: int = FUZZY_THRESHOLD) -> dict | None:
+def fuzzy_match(query: str, lookup: dict, threshold: int = FUZZY_THRESHOLD,
+                debug: bool = False) -> dict | None:
     """
     Find the best match for query in the lookup dict keys.
+    Both query and stored keys are normalized before comparison.
     Returns the matched entry dict or None if below threshold.
     """
     if not query or not lookup:
         return None
 
-    keys = list(lookup.keys())
-    match, score, _ = process.extractOne(query.upper(), keys, scorer=fuzz.token_sort_ratio)
+    keys       = list(lookup.keys())
+    norm_query = _normalize_name(query)
+    top3       = process.extract(norm_query, keys, scorer=fuzz.token_sort_ratio, limit=3)
 
-    if score >= threshold:
-        return lookup[match]
+    if debug and top3:
+        hits = ", ".join(f"'{m}' ({s})" for m, s, _ in top3)
+        print(f"    fuzzy_match('{norm_query}') → {hits} [threshold={threshold}]")
+
+    if top3 and top3[0][1] >= threshold:
+        return lookup[top3[0][0]]
     return None
 
 
@@ -722,7 +746,7 @@ def process_folder(drop_folder: Path, clients: dict, funds: dict,
             # Lower threshold (60) — this field is explicitly labelled in the document.
             # Also try sliding window since trailing noise (e.g. "Q S") can depress scores.
             fund_match = (
-                fuzzy_match(fields["fund_row_name"], funds, threshold=60)
+                fuzzy_match(fields["fund_row_name"], funds, threshold=60, debug=debug)
                 or _sliding_window_match(fields["fund_row_name"], funds, threshold=60)
             )
             if fund_match and debug:
@@ -734,7 +758,7 @@ def process_folder(drop_folder: Path, clients: dict, funds: dict,
                 print(f"  [FUND via PDF disambiguation + share class] {fund_match['canonical']}")
 
         if not fund_match and fields.get("fund_name"):
-            fund_match = fuzzy_match(fields["fund_name"], funds)
+            fund_match = fuzzy_match(fields["fund_name"], funds, debug=debug)
             if fund_match and debug:
                 print(f"  [FUND via PDF payer block] {fund_match['canonical']}")
 
@@ -750,7 +774,7 @@ def process_folder(drop_folder: Path, clients: dict, funds: dict,
 
         if fields.get("client_raw"):
             client_name_raw = clean_client_name(fields["client_raw"])
-            client_match = fuzzy_match(client_name_raw, clients)
+            client_match = fuzzy_match(client_name_raw, clients, debug=debug)
             if client_match and debug:
                 print(f"  [CLIENT via PDF] {client_match['canonical']}")
 
