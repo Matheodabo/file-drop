@@ -27,8 +27,8 @@ from rapidfuzz import process, fuzz
 #  CONFIGURATION  — edit these paths before running
 # ══════════════════════════════════════════════════════════════════════
 
-SAVE_LOCATION = Path(r"C:\Users\matheo\pyvenv\myvenv\TaxAutomation\Save Location")   # root folder containing Savedowns/
-DROP_FOLDER   = Path(r"C:\Users\matheo\pyvenv\myvenv\TaxAutomation\TaxDrop")      # where you bulk-save downloads
+SAVE_LOCATION = Path(r"C:\Users\matheo\pyvenv\myenv\TaxAutomation\Save Location")   # root folder containing Savedowns/
+DROP_FOLDER   = Path(r"C:\Users\matheo\pyvenv\myenv\TaxAutomation\TaxDrop")      # where you bulk-save downloads
 
 # ══════════════════════════════════════════════════════════════════════
 
@@ -309,7 +309,7 @@ def extract_pdf_fields(pdf_path: Path, debug: bool = False) -> dict:
 
             page = pdf.pages[0]
             w, h = page.width, page.height
-            words = page.extract_words(x_tolerance=3, y_tolerance=3)
+            words = page.extract_words(x_tolerance=6, y_tolerance=3)
             full_text = page.extract_text() or ""
             result["raw_text"] = full_text
 
@@ -382,41 +382,80 @@ def extract_pdf_fields(pdf_path: Path, debug: bool = False) -> dict:
                     result["fund_name"] = line.strip()
                     break
 
-            # ── Client name: anchor on RECIPIENT label ───────────────────
-            # Search full page height (label can sit past the 50% mark on some docs)
-            recipient_y = None
-            for ww in words:
-                if "RECIPIENT" in ww["text"].upper() and ww["x0"] < w * 0.55:
-                    recipient_y = ww["top"]
-                    break
+            # ── Client name extraction ────────────────────────────────────
+            #
+            # Method 1 (primary): crop top-left region → extract_text()
+            #   extract_text() reconstructs words from characters, avoiding the
+            #   pdfplumber word-split bug where "SAPERSTEIN" becomes "SAPER"+"STEIN".
+            #   After payer address block (lines with digits), the first non-digit
+            #   lines are the recipient name.
+            #
+            _LABEL_RE = re.compile(
+                r"PAYER.S\s+NAME|RECIPIENT.S\s+NAME|STREET\s+ADDR|KEEP\s+FOR|"
+                r"DEPARTMENT\s+OF\s+THE|INTERNAL\s+REVENUE|COPY\s+[A-Z]\s+FOR",
+                re.IGNORECASE
+            )
+            tl_crop_text = page.crop((0, 0, w * 0.55, h * 0.60)).extract_text() or ""
+            tl_crop_lines = [
+                l.strip() for l in tl_crop_text.splitlines()
+                if l.strip() and not _LABEL_RE.search(l)
+            ]
 
-            if recipient_y is not None:
-                below_words = [
-                    ww for ww in words
-                    if ww["top"] > recipient_y + 2
-                    and ww["top"] < recipient_y + 150
-                    and ww["x0"] < w * 0.55
-                ]
-                below_words.sort(key=lambda ww: (ww["top"], ww["x0"]))
-                below_lines = _group_words_into_lines(below_words)
+            if debug:
+                print(f"CROP LINES: {tl_crop_lines}")
 
-                if debug:
-                    print(f"RECIPIENT LINES: {below_lines}")
+            had_payer_digits = False
+            payer_block_done = False
+            crop_client_lines = []
+            for line in tl_crop_lines:
+                has_digit = bool(re.search(r"\d", line))
+                if not payer_block_done:
+                    if has_digit:
+                        had_payer_digits = True
+                    elif had_payer_digits:
+                        payer_block_done = True
+                if payer_block_done:
+                    if has_digit:
+                        break
+                    crop_client_lines.append(line)
 
-                client_lines = []
-                for line in below_lines:
-                    if re.search(r"\d", line) or re.search(r"\bRECIPIENT\b|\bPAYER\b", line, re.IGNORECASE):
-                        if client_lines:
-                            break
-                        continue
-                    client_lines.append(line)
-                    if len(client_lines) >= 2:
+            if crop_client_lines:
+                result["client_raw"] = "\n".join(crop_client_lines)
+
+            # Method 2 (fallback): RECIPIENT label anchor using word coordinates
+            if not result["client_raw"]:
+                recipient_y = None
+                for ww in words:
+                    if "RECIPIENT" in ww["text"].upper() and ww["x0"] < w * 0.55:
+                        recipient_y = ww["top"]
                         break
 
-                if client_lines:
-                    result["client_raw"] = "\n".join(client_lines)
+                if recipient_y is not None:
+                    below_words = [
+                        ww for ww in words
+                        if ww["top"] > recipient_y + 2
+                        and ww["top"] < recipient_y + 150
+                        and ww["x0"] < w * 0.55
+                    ]
+                    below_words.sort(key=lambda ww: (ww["top"], ww["x0"]))
+                    below_lines = _group_words_into_lines(below_words)
 
-            # Fallback: heuristic address-skipping if RECIPIENT anchor missed
+                    if debug:
+                        print(f"RECIPIENT LINES (fallback): {below_lines}")
+
+                    client_lines = []
+                    for line in below_lines:
+                        if re.search(r"\d", line) or re.search(r"\bRECIPIENT\b|\bPAYER\b", line, re.IGNORECASE):
+                            if client_lines:
+                                break
+                            continue
+                        client_lines.append(line)
+                        if len(client_lines) >= 2:
+                            break
+                    if client_lines:
+                        result["client_raw"] = "\n".join(client_lines)
+
+            # Method 3 (last resort): heuristic address-skipping on top-left word lines
             if not result["client_raw"] and tl_lines:
                 address_done = False
                 client_lines = []
