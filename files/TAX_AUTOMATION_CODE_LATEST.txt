@@ -188,22 +188,44 @@ def client_folder_dest(base: Path, fund_name: str, client_name: str, year: str, 
 #  PDF EXTRACTION
 # ══════════════════════════════════════════════════════════════════════
 
+def _group_words_into_lines(words: list, y_tolerance: int = 5) -> list:
+    """Group word dicts (with 'top', 'text', 'x0') into text lines."""
+    lines = []
+    current_line = []
+    current_top = None
+    for word in words:
+        if current_top is None or abs(word["top"] - current_top) <= y_tolerance:
+            current_line.append(word["text"])
+            current_top = word["top"]
+        else:
+            if current_line:
+                lines.append(" ".join(current_line))
+            current_line = [word["text"]]
+            current_top = word["top"]
+    if current_line:
+        lines.append(" ".join(current_line))
+    return lines
+
+
 def extract_pdf_fields(pdf_path: Path, debug: bool = False) -> dict:
     """
-    Open a PDF and attempt to extract:
-      - year       (top-right region)
-      - form_type  (anywhere on first page)
-      - fund_name  (top-left region, first text block)
-      - client_raw (top-left region, below fund block)
-
-    Returns a dict with those keys (values may be None if not found).
+    Extract from PDF:
+      - year          (TAX YEAR box first, then positional fallback)
+      - form_type     (full-text keyword scan)
+      - fund_name     (payer block, top-left)
+      - fund_row_name (explicit "Fund:" label in data table — most reliable)
+      - client_raw    (anchored on RECIPIENT label, with heuristic fallback)
+      - share_class   (CLASS I/S, CL I/S, SERIES I/S patterns)
+      - raw_text
     """
     result = {
-        "year":       None,
-        "form_type":  None,
-        "fund_name":  None,
-        "client_raw": None,
-        "raw_text":   None,
+        "year":          None,
+        "form_type":     None,
+        "fund_name":     None,
+        "fund_row_name": None,
+        "client_raw":    None,
+        "share_class":   None,
+        "raw_text":      None,
     }
 
     try:
@@ -213,8 +235,6 @@ def extract_pdf_fields(pdf_path: Path, debug: bool = False) -> dict:
 
             page = pdf.pages[0]
             w, h = page.width, page.height
-
-            # ── Extract all words with positions ──────────────────────
             words = page.extract_words(x_tolerance=3, y_tolerance=3)
             full_text = page.extract_text() or ""
             result["raw_text"] = full_text
@@ -226,20 +246,24 @@ def extract_pdf_fields(pdf_path: Path, debug: bool = False) -> dict:
                 print(f"TEXT :\n{full_text[:800]}")
                 print(f"{'─'*60}")
 
-            # ── Year: look for 4-digit tax year in right half, top 40% ─
-            year_candidates = []
-            for word in words:
-                if re.fullmatch(r"20\d{2}", word["text"]):
-                    if word["x0"] > w * 0.5 and word["top"] < h * 0.4:
-                        year_candidates.append(word["text"])
-            if year_candidates:
-                result["year"] = year_candidates[0]
+            # ── Year: explicit TAX YEAR box first ────────────────────────
+            m = re.search(r"TAX\s+YEAR\s+(20\d{2})", full_text, re.IGNORECASE)
+            if m:
+                result["year"] = m.group(1)
             else:
-                m = re.search(r"(20\d{2})\d{4}", full_text) or re.search(r"\b(20\d{2})\b", full_text)
-                if m:
-                    result["year"] = m.group(1)
+                year_candidates = []
+                for word in words:
+                    if re.fullmatch(r"20\d{2}", word["text"]):
+                        if word["x0"] > w * 0.5 and word["top"] < h * 0.4:
+                            year_candidates.append(word["text"])
+                if year_candidates:
+                    result["year"] = year_candidates[0]
+                else:
+                    m2 = re.search(r"(20\d{2})\d{4}", full_text) or re.search(r"\b(20\d{2})\b", full_text)
+                    if m2:
+                        result["year"] = m2.group(1)
 
-            # ── Form type: scan full text for known keywords ───────────
+            # ── Form type: full-text keyword scan ────────────────────────
             upper_text = full_text.upper()
             for form, keywords in FORM_KEYWORDS.items():
                 for kw in keywords:
@@ -249,58 +273,85 @@ def extract_pdf_fields(pdf_path: Path, debug: bool = False) -> dict:
                 if result["form_type"]:
                     break
 
-            # ── Top-left region: fund name + client name ───────────────
-            # Top-left = left 55% of page, top 50% of height
-            top_left_words = [
-                w for w in words
-                if w["x0"] < page.width * 0.55 and w["top"] < page.height * 0.50
-            ]
-            top_left_words.sort(key=lambda w: (w["top"], w["x0"]))
+            # ── Fund: data row (most explicit, directly labelled) ─────────
+            m = re.search(r"(?:^|\n)\s*Fund:\s*(.+?)(?:\n|$)", full_text, re.IGNORECASE)
+            if m:
+                result["fund_row_name"] = m.group(1).strip()
 
-            # Group into lines (words within 5pts vertical are on the same line)
-            lines = []
-            current_line = []
-            current_top = None
-            for word in top_left_words:
-                if current_top is None or abs(word["top"] - current_top) <= 5:
-                    current_line.append(word["text"])
-                    current_top = word["top"]
-                else:
-                    if current_line:
-                        lines.append(" ".join(current_line))
-                    current_line = [word["text"]]
-                    current_top = word["top"]
-            if current_line:
-                lines.append(" ".join(current_line))
+            # ── Share class (CL I/S, CLASS I/S, SERIES I/S) ──────────────
+            m = re.search(
+                r"\bCLASS\s+([A-Z])\b|\bCL\.?\s+([A-Z])\b|\bSERIES\s+([A-Z])\b",
+                full_text, re.IGNORECASE
+            )
+            if m:
+                result["share_class"] = next(g for g in m.groups() if g).upper()
+
+            # ── Top-left region: payer block → fund name ─────────────────
+            top_left_words = [
+                ww for ww in words
+                if ww["x0"] < w * 0.55 and ww["top"] < h * 0.50
+            ]
+            top_left_words.sort(key=lambda ww: (ww["top"], ww["x0"]))
+            tl_lines = _group_words_into_lines(top_left_words)
 
             if debug:
-                print(f"TOP-LEFT LINES: {lines}")
+                print(f"TOP-LEFT LINES: {tl_lines}")
 
-            # Heuristic: first line is fund name, look for client name
-            # after we pass the address block (usually 2-4 lines of address)
-            if lines:
-                result["fund_name"] = lines[0].strip()
+            # First line that isn't a form template label is the payer/fund name
+            for line in tl_lines:
+                if not re.search(r"PAYER.S\s+NAME|STREET\s+ADDRESS|CITY\s+OR\s+TOWN", line, re.IGNORECASE):
+                    result["fund_name"] = line.strip()
+                    break
 
-            # Client name: usually after address lines.
-            # Address lines tend to contain numbers (zip) or state abbreviations.
-            # We look for the first "name-like" line after line 0.
-            address_done = False
-            client_lines = []
-            for line in lines[1:]:
-                upper = line.upper().strip()
-                # Address-like: contains digits or is very short
-                is_address = bool(re.search(r"\d", line)) or len(line.split()) <= 1
-                if not address_done and is_address:
-                    continue
-                else:
-                    address_done = True
-                    # Stop at C/O or other noise markers
-                    if re.match(r"C\s*/?\s*O\b", upper):
-                        break
+            # ── Client name: anchor on RECIPIENT label ───────────────────
+            recipient_y = None
+            for ww in words:
+                if "RECIPIENT" in ww["text"].upper() and ww["x0"] < w * 0.55 and ww["top"] < h * 0.5:
+                    recipient_y = ww["top"]
+                    break
+
+            if recipient_y is not None:
+                below_words = [
+                    ww for ww in words
+                    if ww["top"] > recipient_y + 2
+                    and ww["top"] < recipient_y + 120
+                    and ww["x0"] < w * 0.55
+                ]
+                below_words.sort(key=lambda ww: (ww["top"], ww["x0"]))
+                below_lines = _group_words_into_lines(below_words)
+
+                if debug:
+                    print(f"RECIPIENT LINES: {below_lines}")
+
+                client_lines = []
+                for line in below_lines:
+                    if re.search(r"\d", line) or re.search(r"\bRECIPIENT\b|\bPAYER\b", line, re.IGNORECASE):
+                        if client_lines:
+                            break
+                        continue
                     client_lines.append(line)
+                    if len(client_lines) >= 2:
+                        break
 
-            if client_lines:
-                result["client_raw"] = "\n".join(client_lines)
+                if client_lines:
+                    result["client_raw"] = "\n".join(client_lines)
+
+            # Fallback: heuristic address-skipping if RECIPIENT anchor missed
+            if not result["client_raw"] and tl_lines:
+                address_done = False
+                client_lines = []
+                for line in tl_lines[1:]:
+                    upper = line.upper().strip()
+                    is_address = bool(re.search(r"\d", line)) or len(line.split()) <= 1
+                    if not address_done and is_address:
+                        continue
+                    else:
+                        address_done = True
+                        if re.match(r"C\s*/?\s*O\b", upper):
+                            break
+                        client_lines.append(line)
+                if client_lines:
+                    result["client_raw"] = "\n".join(client_lines)
 
     except Exception as e:
         print(f"[ERROR] Could not read {pdf_path.name}: {e}")
@@ -413,11 +464,13 @@ def _get_ambiguous_fund_candidates(cleaned: str, lookup: dict,
     return [key for s, key in scored if s >= max_score * ambiguity_ratio]
 
 
-def _resolve_fund_from_pdf(pdf_text: str, candidate_keys: list, lookup: dict) -> dict | None:
+def _resolve_fund_from_pdf(pdf_text: str, candidate_keys: list, lookup: dict,
+                           share_class: str = None) -> dict | None:
     """
     Given ambiguous fund candidates and the full PDF text, score each candidate
     by how many of its tokens appear in the PDF (with spaces — real document text).
-    The fund whose name actually appears in the document wins.
+    share_class (e.g. "I" or "S") adds a significant score boost to candidates
+    whose name contains a matching CLASS/CL indicator, clinching Blackstone-style ties.
     """
     if not pdf_text or not candidate_keys:
         return None
@@ -429,6 +482,11 @@ def _resolve_fund_from_pdf(pdf_text: str, candidate_keys: list, lookup: dict) ->
     for key in candidate_keys:
         tokens = [t for t in re.split(r"[\s,]+", key) if len(t) >= 4]
         score  = sum(len(t) for t in tokens if t.upper() in upper)
+        if share_class and re.search(
+            rf"\bCLASS\s+{re.escape(share_class)}\b|\bCL\.?\s*{re.escape(share_class)}\b",
+            key, re.IGNORECASE
+        ):
+            score += 20
         if score > best_score:
             best_score = score
             best_key   = key
@@ -564,82 +622,124 @@ def process_folder(drop_folder: Path, clients: dict, funds: dict,
     for pdf_path in pdfs:
         print(f"Processing: {pdf_path.name}")
 
-        # ── Step 1: Try filename first ─────────────────────────────────
+        # ── Step 1: Filename signals ───────────────────────────────────
         fn              = parse_filename(pdf_path.stem, clients=clients, funds=funds)
-        year            = fn["year"]
-        form_type       = fn["form_type"]
-        fund_match      = fn["fund_match"]
-        client_match    = fn["client_match"]
+        fn_year         = fn["year"]
+        fn_form_type    = fn["form_type"]
+        fn_fund_match   = fn["fund_match"]
+        fn_client_match = fn["client_match"]
         ambiguous_funds = fn["ambiguous_fund_keys"]
 
         if debug:
-            amb_note = f" (AMBIGUOUS x{len(ambiguous_funds)} -- will verify in PDF)" if ambiguous_funds else ""
-            print(f"  [FILENAME] year={year} form={form_type} "
-                  f"fund={'YES: ' + fund_match['canonical'] if fund_match else 'no match'}{amb_note} "
-                  f"client={'YES: ' + client_match['canonical'] if client_match else 'no match'}")
+            amb_note = f" (AMBIGUOUS x{len(ambiguous_funds)})" if ambiguous_funds else ""
+            print(f"  [FILENAME] year={fn_year} form={fn_form_type} "
+                  f"fund={'YES: ' + fn_fund_match['canonical'] if fn_fund_match else 'no match'}{amb_note} "
+                  f"client={'YES: ' + fn_client_match['canonical'] if fn_client_match else 'no match'}")
 
-        # ── Step 2: Open PDF when fund is ambiguous, missing, or client missing ──
-        need_pdf = bool(ambiguous_funds) or not fund_match or not client_match
-        if need_pdf:
-            fields = extract_pdf_fields(pdf_path, debug=debug)
+        # ── Step 2: PDF extraction (always — comprehensive signal gather) ─
+        fields = extract_pdf_fields(pdf_path, debug=debug)
 
-            if not year:
-                year = fields["year"]
-            if not form_type:
-                form_type = fields["form_type"]
+        if debug:
+            print(f"  [PDF] year={fields['year']} form={fields['form_type']} "
+                  f"fund_row='{fields.get('fund_row_name') or ''}' "
+                  f"fund_payer='{fields.get('fund_name') or ''}' "
+                  f"share_class={fields.get('share_class') or 'none'} "
+                  f"client='{fields.get('client_raw') or ''}'")
 
-            # Resolve ambiguous fund using PDF text
-            if ambiguous_funds and fields.get("raw_text"):
-                resolved = _resolve_fund_from_pdf(fields["raw_text"], ambiguous_funds, funds)
-                if resolved:
-                    fund_match = resolved
-                    if debug:
-                        print(f"  [PDF VERIFY] Fund resolved to: {fund_match['canonical']}")
+        # ── Step 3: Merge all signals (PDF authoritative where anchored) ─
+        # Year: TAX YEAR box > filename > PDF generic fallback
+        year      = fields["year"] or fn_year
 
-            # Fall back to PDF text matching if still unresolved
-            if not fund_match and fields.get("fund_name"):
-                fund_match = fuzzy_match(fields["fund_name"], funds)
-            if not client_match and fields.get("client_raw"):
-                client_name_raw = clean_client_name(fields["client_raw"])
-                client_match = fuzzy_match(client_name_raw, clients)
-        else:
-            fields = {"fund_name": None, "client_raw": None}
-            if debug:
-                print(f"  [PDF SKIPPED -- all info found in filename]")
+        # Form type: PDF full-text scan > filename
+        form_type = fields["form_type"] or fn_form_type
 
-        # ── Step 3: Validate ───────────────────────────────────────────
+        share_class = fields.get("share_class")
+
+        # Fund resolution priority:
+        #   1. Fund: data row  (explicit label in document — most reliable)
+        #   2. Ambiguous filename candidates resolved via PDF text + share class
+        #   3. PDF payer block fund name
+        #   4. Filename match
+        fund_match = None
+
+        if fields.get("fund_row_name"):
+            fund_match = fuzzy_match(fields["fund_row_name"], funds)
+            if fund_match and debug:
+                print(f"  [FUND via Fund: row] {fund_match['canonical']}")
+
+        if not fund_match and ambiguous_funds and fields.get("raw_text"):
+            fund_match = _resolve_fund_from_pdf(fields["raw_text"], ambiguous_funds, funds, share_class)
+            if fund_match and debug:
+                print(f"  [FUND via PDF disambiguation + share class] {fund_match['canonical']}")
+
+        if not fund_match and fields.get("fund_name"):
+            fund_match = fuzzy_match(fields["fund_name"], funds)
+            if fund_match and debug:
+                print(f"  [FUND via PDF payer block] {fund_match['canonical']}")
+
+        if not fund_match:
+            fund_match = fn_fund_match
+            if fund_match and debug:
+                print(f"  [FUND via filename] {fund_match['canonical']}")
+
+        # Client resolution priority:
+        #   1. PDF RECIPIENT-anchored extraction
+        #   2. Filename match
+        client_match = None
+
+        if fields.get("client_raw"):
+            client_name_raw = clean_client_name(fields["client_raw"])
+            client_match = fuzzy_match(client_name_raw, clients)
+            if client_match and debug:
+                print(f"  [CLIENT via PDF] {client_match['canonical']}")
+
+        if not client_match:
+            client_match = fn_client_match
+            if client_match and debug:
+                print(f"  [CLIENT via filename] {client_match['canonical']}")
+
+        # ── Step 4: Validate ───────────────────────────────────────────
         if not year or not form_type:
             reason = f"Could not extract: {', '.join(k for k, v in [('year', year), ('form_type', form_type)] if not v)}"
             print(f"  [SKIP] {reason}")
-            write_log(LOG_FILE, pdf_path, reason, {"year": year, "form_type": form_type,
-                      "fund_name": fields.get("fund_name"), "client_raw": fields.get("client_raw")})
+            write_log(LOG_FILE, pdf_path, reason, {
+                "year": year, "form_type": form_type,
+                "fund_name":   fields.get("fund_row_name") or fields.get("fund_name"),
+                "client_raw":  fields.get("client_raw"),
+            })
             skipped_count += 1
             continue
 
         if not fund_match or not client_match:
             missing = []
             if not fund_match:
-                missing.append(f"fund (saw: '{fields.get('fund_name', 'nothing')}')")
+                saw = fields.get("fund_row_name") or fields.get("fund_name") or "nothing"
+                missing.append(f"fund (saw: '{saw}')")
             if not client_match:
                 missing.append(f"client (saw: '{fields.get('client_raw', 'nothing')}')")
             reason = f"No config match for: {', '.join(missing)}"
             print(f"  [SKIP] {reason}")
-            write_log(LOG_FILE, pdf_path, reason, {"year": year, "form_type": form_type,
-                      "fund_name": fields.get("fund_name"), "client_raw": fields.get("client_raw")})
+            write_log(LOG_FILE, pdf_path, reason, {
+                "year": year, "form_type": form_type,
+                "fund_name":  fields.get("fund_row_name") or fields.get("fund_name"),
+                "client_raw": fields.get("client_raw"),
+            })
             skipped_count += 1
             continue
 
-        # ── Step 4: Build destinations ─────────────────────────────────
+        # ── Step 5: Build destinations ─────────────────────────────────
         fund_canonical   = fund_match["canonical"]
         client_canonical = client_match["canonical"]
 
         fund_dest   = fund_folder_dest(fund_match["folder"],   client_canonical, year, form_type, fund_canonical)
         client_dest = client_folder_dest(client_match["folder"], fund_canonical, client_canonical, year, form_type)
 
-        # ── Step 5: Report ─────────────────────────────────────────────
+        # ── Step 6: Report ─────────────────────────────────────────────
         print(f"  Client  : {client_canonical}")
         print(f"  Fund    : {fund_canonical}")
         print(f"  Year    : {year}  |  Form: {form_type}")
+        if share_class:
+            print(f"  Class   : {share_class}")
         print(f"  -> Fund folder  : {fund_dest}")
         print(f"  -> Client folder: {client_dest}")
 
@@ -649,7 +749,7 @@ def process_folder(drop_folder: Path, clients: dict, funds: dict,
             print()
             continue
 
-        # ── Step 6: Copy ───────────────────────────────────────────────
+        # ── Step 7: Copy ───────────────────────────────────────────────
         errors = []
         for dest in (fund_dest, client_dest):
             try:
