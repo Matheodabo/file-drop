@@ -1,0 +1,398 @@
+' ============================================================
+' REPORT FORMATTER MACRO
+' Paste this entire block into a new VBA Module:
+'   Developer > Visual Basic > Insert > Module
+' Then run:  FormatReport
+' ============================================================
+
+Option Explicit
+
+Sub FormatReport()
+
+    ' ---- Object / variable declarations ----
+    Dim ws          As Worksheet
+    Dim removedWs   As Worksheet
+    Dim pivotWs     As Worksheet
+    Dim lastRow     As Long
+    Dim lastCol     As Long
+    Dim i           As Long
+    Dim cellStr     As String
+    Dim dblVal      As Double
+
+    Set ws = ActiveSheet
+
+    Application.ScreenUpdating  = False
+    Application.Calculation     = xlCalculationManual
+    Application.DisplayAlerts   = False
+
+    On Error GoTo ErrorHandler
+
+    ' ============================================================
+    ' STEP 1 – Delete rows 1 and 2
+    ' ============================================================
+    ws.Rows("1:2").Delete Shift:=xlUp
+
+    ' ============================================================
+    ' STEPS 2-9 – Column groupings (Data > Group)
+    ' ============================================================
+    ws.Columns("F:G").Group      ' Step 2  : Issuer, Underlying Asset Class
+    ws.Columns("I:K").Group      ' Step 3/4.5: Underlying, [mid col], Issue Date
+    ws.Columns("M:R").Group      ' Step 4  : Determination Date → Initial Strike
+    ws.Columns("T:X").Group      ' Step 5  : Hyp. Redemption Value → Objective
+    ws.Columns("Z:AD").Group     ' Step 6  : Min Payment → Buffer %
+    ws.Columns("AH:AI").Group    ' Step 7  : Underwriter, Term
+    ws.Columns("AM:AM").Group    ' Step 8  : Barrier Percentage
+    ws.Columns("AO:AT").Group    ' Step 9  : State → Sub Type
+
+    ' ============================================================
+    ' STEP 10 – AutoFilter on header row
+    ' ============================================================
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+    ws.Rows(1).AutoFilter
+
+    ' ============================================================
+    ' SETUP – Create (or recreate) "Removed From Report" sheet
+    ' ============================================================
+    Dim removedName As String
+    removedName = "Removed From Report"
+
+    ' Delete the sheet if it already exists
+    Dim tmpWs As Worksheet
+    On Error Resume Next
+    Set tmpWs = ThisWorkbook.Sheets(removedName)
+    On Error GoTo ErrorHandler
+    If Not tmpWs Is Nothing Then
+        tmpWs.Delete
+        Set tmpWs = Nothing
+    End If
+
+    Set removedWs = ThisWorkbook.Sheets.Add(After:=ws)
+    removedWs.Name = removedName
+
+    ' Expand all column groups so the header copy includes EVERY column
+    ws.Outline.ShowLevels ColumnLevels:=8
+
+    ' Copy header row to Removed sheet
+    ws.Rows(1).Copy
+    removedWs.Rows(1).PasteSpecial Paste:=xlPasteValues
+    removedWs.Rows(1).PasteSpecial Paste:=xlPasteFormats
+    Application.CutCopyMode = False
+
+    ' ============================================================
+    ' STEP 12 – Replace "-" with "Equity" in column G
+    '           (done before Steepener removal so data is clean)
+    ' ============================================================
+    lastRow = ws.Cells(ws.Rows.Count, "C").End(xlUp).Row
+
+    Dim gCell As Range
+    For Each gCell In ws.Range("G2:G" & lastRow)
+        If Trim(CStr(gCell.Value)) = "-" Then
+            gCell.Value = "Equity"
+        End If
+    Next gCell
+
+    ' ============================================================
+    ' STEP 16 – Convert columns S and AL from text to numbers,
+    '           then format both as percentage.
+    '           Must be done BEFORE steps 13 and 15 so numeric
+    '           comparisons work correctly.
+    ' ============================================================
+
+    ' --- Locate columns dynamically by header name ----
+    Dim colS    As Long : colS    = 19   ' default = S
+    Dim colAL   As Long : colAL   = 38   ' default = AL
+    Dim colAJ   As Long : colAJ   = 36   ' default = AJ  (Issue Price)
+    Dim colD    As Long : colD    = 4    ' Market Value ($)
+    Dim colE    As Long : colE    = 5    ' Quantity
+
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    For i = 1 To lastCol
+        Select Case LCase(Trim(CStr(ws.Cells(1, i).Value)))
+            Case "underlying performance"        : colS   = i
+            Case "current price performance"     : colAL  = i
+            Case "issue price"                   : colAJ  = i
+            Case "market value ($)"              : colD   = i
+            Case "quantity"                      : colE   = i
+        End Select
+    Next i
+
+    ' Helper: converts a text percentage cell to a decimal number
+    '         Handles both "15.3%" and "0.153" style inputs
+
+    ' -- Column S (Underlying Performance) --
+    For i = 2 To lastRow
+        With ws.Cells(i, colS)
+            cellStr = Trim(CStr(.Value))
+            If cellStr <> "" And cellStr <> "-" Then
+                cellStr = Replace(cellStr, "%", "")
+                On Error Resume Next
+                dblVal = CDbl(cellStr)
+                If Err.Number = 0 Then
+                    ' If magnitude > 1 the raw number is already in % form (e.g. 15.3)
+                    If Abs(dblVal) > 1 Then dblVal = dblVal / 100
+                    .Value = dblVal
+                    .NumberFormat = "0.00%"
+                End If
+                Err.Clear
+                On Error GoTo ErrorHandler
+            End If
+        End With
+    Next i
+
+    ' -- Column AL (Current Price Performance) --
+    For i = 2 To lastRow
+        With ws.Cells(i, colAL)
+            cellStr = Trim(CStr(.Value))
+            If cellStr <> "" And cellStr <> "-" Then
+                cellStr = Replace(cellStr, "%", "")
+                On Error Resume Next
+                dblVal = CDbl(cellStr)
+                If Err.Number = 0 Then
+                    If Abs(dblVal) > 1 Then dblVal = dblVal / 100
+                    .Value = dblVal
+                    .NumberFormat = "0.00%"
+                End If
+                Err.Clear
+                On Error GoTo ErrorHandler
+            End If
+        End With
+    Next i
+
+    ' ============================================================
+    ' STEP 13 – For any remaining "-" in column AL (Current Price
+    '           Performance), compute D / E - 1 and format as %.
+    ' ============================================================
+    For i = 2 To lastRow
+        With ws.Cells(i, colAL)
+            If Trim(CStr(.Value)) = "-" Then
+                Dim mktVal As Double
+                Dim qty    As Double
+                On Error Resume Next
+                mktVal = CDbl(ws.Cells(i, colD).Value)
+                qty    = CDbl(ws.Cells(i, colE).Value)
+                If Err.Number = 0 And qty <> 0 Then
+                    .Value = (mktVal / qty) - 1
+                    .NumberFormat = "0.00%"
+                End If
+                Err.Clear
+                On Error GoTo ErrorHandler
+            End If
+        End With
+    Next i
+
+    ' ============================================================
+    ' STEP 11 – Move rows containing "Steepener" in column C
+    '           to the "Removed From Report" sheet.
+    '           Groups are already expanded from the header copy.
+    ' ============================================================
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+
+    lastRow = ws.Cells(ws.Rows.Count, "C").End(xlUp).Row
+
+    ' Collect steepener row numbers (top-down order)
+    Dim steepRows() As Long
+    Dim steepCount  As Long
+    steepCount = 0
+    ReDim steepRows(1 To lastRow)
+
+    For i = 2 To lastRow
+        If InStr(1, CStr(ws.Cells(i, 3).Value), "Steepener", vbTextCompare) > 0 Then
+            steepCount = steepCount + 1
+            steepRows(steepCount) = i
+        End If
+    Next i
+
+    If steepCount > 0 Then
+        ' Find next empty row on Removed sheet
+        Dim removedNext As Long
+        removedNext = removedWs.Cells(removedWs.Rows.Count, "A").End(xlUp).Row + 1
+        If removedNext < 2 Then removedNext = 2
+
+        ' Copy rows to Removed sheet (top-down is fine here – no row shift yet)
+        For i = 1 To steepCount
+            ws.Rows(steepRows(i)).Copy
+            removedWs.Rows(removedNext).PasteSpecial Paste:=xlPasteValues
+            removedWs.Rows(removedNext).PasteSpecial Paste:=xlPasteFormats
+            removedNext = removedNext + 1
+        Next i
+        Application.CutCopyMode = False
+
+        ' Delete from main sheet bottom-up to preserve row indices
+        For i = steepCount To 1 Step -1
+            ws.Rows(steepRows(i)).Delete Shift:=xlUp
+        Next i
+    End If
+
+    ' ============================================================
+    ' STEP 14 – Sort by Current Price Performance (largest first),
+    '           then filter Issue Price to exclude blanks.
+    ' ============================================================
+    lastRow  = ws.Cells(ws.Rows.Count, "C").End(xlUp).Row
+    lastCol  = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    ' Sort ALL rows (descending) by Current Price Performance.
+    ' Data is now numeric so text-as-numbers issue is gone.
+    ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol)).Sort _
+        Key1:=ws.Cells(1, colAL), _
+        Order1:=xlDescending, _
+        Header:=xlYes, _
+        MatchCase:=False, _
+        Orientation:=xlTopToBottom
+
+    ' Apply AutoFilter and filter Issue Price ≠ blank
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+    ws.Rows(1).AutoFilter
+    ws.AutoFilter.Range.AutoFilter Field:=colAJ, Criteria1:="<>"
+
+    ' ============================================================
+    ' STEP 15 – Find first row where Current Price Performance
+    '           < 20 % and move it + everything below to Removed.
+    '           (Filter is turned off first so all rows are visible
+    '            and row indices are unambiguous.)
+    ' ============================================================
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+
+    lastRow = ws.Cells(ws.Rows.Count, "C").End(xlUp).Row
+
+    Dim cutStart As Long
+    cutStart = 0
+
+    For i = 2 To lastRow
+        Dim perfVal As Variant
+        perfVal = ws.Cells(i, colAL).Value
+        If IsNumeric(perfVal) Then
+            If CDbl(perfVal) < 0.2 Then
+                cutStart = i
+                Exit For
+            End If
+        End If
+    Next i
+
+    If cutStart > 0 Then
+        Dim removedAppend As Long
+        removedAppend = removedWs.Cells(removedWs.Rows.Count, "A").End(xlUp).Row + 1
+        If removedAppend < 2 Then removedAppend = 2
+
+        ws.Rows(cutStart & ":" & lastRow).Copy
+        removedWs.Rows(removedAppend).PasteSpecial Paste:=xlPasteValues
+        removedWs.Rows(removedAppend).PasteSpecial Paste:=xlPasteFormats
+        Application.CutCopyMode = False
+
+        ws.Rows(cutStart & ":" & lastRow).Delete Shift:=xlUp
+    End If
+
+    ' Re-apply AutoFilter on main sheet with Issue Price ≠ blank
+    lastRow = ws.Cells(ws.Rows.Count, "C").End(xlUp).Row
+    ws.Rows(1).AutoFilter
+    ws.AutoFilter.Range.AutoFilter Field:=colAJ, Criteria1:="<>"
+
+    ' ============================================================
+    ' PIVOT TABLE – Build in a new "Pivot Table" sheet
+    ' ============================================================
+
+    ' Remove filter so pivot source = all remaining data
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+
+    lastRow = ws.Cells(ws.Rows.Count, "C").End(xlUp).Row
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    ' Delete existing pivot sheet if present
+    On Error Resume Next
+    Dim existPivot As Worksheet
+    Set existPivot = ThisWorkbook.Sheets("Pivot Table")
+    If Not existPivot Is Nothing Then
+        existPivot.Delete
+        Set existPivot = Nothing
+    End If
+    On Error GoTo ErrorHandler
+
+    Set pivotWs = ThisWorkbook.Sheets.Add(After:=removedWs)
+    pivotWs.Name = "Pivot Table"
+
+    Dim srcRange As Range
+    Set srcRange = ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol))
+
+    Dim pc As PivotCache
+    Set pc = ThisWorkbook.PivotCaches.Create( _
+        SourceType:=xlDatabase, _
+        SourceData:=srcRange)
+
+    Dim pt As PivotTable
+    Set pt = pc.CreatePivotTable( _
+        TableDestination:=pivotWs.Range("A3"), _
+        TableName:="ReportPivot")
+
+    With pt
+        ' ---- ROW FIELD ----
+        With .PivotFields("Description")
+            .Orientation = xlRowField
+            .Position     = 1
+        End With
+
+        ' ---- VALUE 1: Sum of Market Value ($) ----
+        With .PivotFields("Market Value ($)")
+            .Orientation  = xlDataField
+            .Function     = xlSum
+            .Name         = "Sum of Market Value ($)"
+            .NumberFormat = "#,##0.00"
+        End With
+
+        ' ---- VALUE 2: Average of Pricing Date ----
+        With .PivotFields("Pricing Date")
+            .Orientation  = xlDataField
+            .Function     = xlAverage
+            .Name         = "Average of Pricing Date"
+            .NumberFormat = "m/d/yyyy"
+        End With
+
+        ' ---- VALUE 3: Average of Underlying Performance ----
+        With .PivotFields("Underlying Performance")
+            .Orientation  = xlDataField
+            .Function     = xlAverage
+            .Name         = "Average of Underlying Performance"
+            .NumberFormat = "0.00%"
+        End With
+
+        ' ---- VALUE 4: Average of Current Price Performance ----
+        With .PivotFields("Current Price Performance")
+            .Orientation  = xlDataField
+            .Function     = xlAverage
+            .Name         = "Average of Current Price Performance"
+            .NumberFormat = "0.00%"
+        End With
+
+        ' Totals
+        .ColumnGrand = True
+        .RowGrand    = True
+    End With
+
+    ' ============================================================
+    ' DONE
+    ' ============================================================
+    Application.ScreenUpdating = True
+    Application.Calculation    = xlCalculationAutomatic
+    Application.DisplayAlerts  = True
+
+    MsgBox "Macro completed successfully!" & vbCrLf & vbCrLf & _
+           "- Column groups applied (F:G, I:K, M:R, T:X, Z:AD, AH:AI, AM, AO:AT)" & vbCrLf & _
+           "- AutoFilter applied to header row" & vbCrLf & _
+           "- 'Removed From Report' tab created (Steepeners + <20% rows)" & vbCrLf & _
+           "- Column G '-' replaced with 'Equity'" & vbCrLf & _
+           "- Columns S and AL converted to numeric percentages" & vbCrLf & _
+           "- Missing AL values filled with D/E-1 formula" & vbCrLf & _
+           "- Data sorted by Current Price Performance (desc)" & vbCrLf & _
+           "- Pivot Table created", _
+           vbInformation, "Report Formatter"
+
+    Exit Sub
+
+ErrorHandler:
+    Application.ScreenUpdating = True
+    Application.Calculation    = xlCalculationAutomatic
+    Application.DisplayAlerts  = True
+    MsgBox "ERROR " & Err.Number & ": " & Err.Description & vbCrLf & _
+           "(Occurred at step currently in progress)", _
+           vbCritical, "Report Formatter – Error"
+
+End Sub
