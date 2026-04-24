@@ -1,0 +1,464 @@
+' ================================================================
+' STRUCTURED PRODUCT MACRO
+' HOW TO INSTALL:
+'   1. Open your Excel data file
+'   2. Press Alt + F11  (VBA Editor)
+'   3. Insert > Module
+'   4. Paste this entire file
+'   5. Close VBA Editor
+'   6. Alt + F8 > select StructuredProductMacro > Run
+'
+' IMPORTANT: Run this macro while your data sheet is the
+'            active/selected tab. The macro uses ActiveSheet
+'            so it always operates on the correct workbook.
+' ================================================================
+
+Option Explicit
+
+' ------------------------------------------------------------------
+' Helper: safely checks whether a sheet name exists in a workbook
+' ------------------------------------------------------------------
+Private Function SheetExists(wb As Workbook, sName As String) As Boolean
+    Dim sh As Object
+    For Each sh In wb.Sheets
+        If sh.Name = sName Then
+            SheetExists = True
+            Exit Function
+        End If
+    Next sh
+    SheetExists = False
+End Function
+
+' ------------------------------------------------------------------
+' Helper: safely get/create a sheet, deleting the old one first
+' ------------------------------------------------------------------
+Private Function GetOrCreateSheet(wb As Workbook, _
+                                   sName As String, _
+                                   afterSheet As Worksheet) As Worksheet
+    If SheetExists(wb, sName) Then
+        wb.Sheets(sName).Delete
+    End If
+    Dim newWs As Worksheet
+    Set newWs = wb.Sheets.Add(After:=afterSheet)
+    newWs.Name = sName
+    Set GetOrCreateSheet = newWs
+End Function
+
+' ==================================================================
+' MAIN MACRO
+' ==================================================================
+Sub StructuredProductMacro()
+
+    ' ---- All Dim declarations at the top (required by Option Explicit) ----
+    Dim wb              As Workbook
+    Dim ws              As Worksheet
+    Dim removedWs       As Worksheet
+    Dim pivotWs         As Worksheet
+
+    Dim lastRow         As Long
+    Dim lastCol         As Long
+    Dim i               As Long
+
+    Dim cellStr         As String
+    Dim alVal           As String
+    Dim dblVal          As Double
+    Dim mktVal          As Double
+    Dim qty             As Double
+    Dim perfVal         As Variant
+
+    Dim gCell           As Range
+
+    Dim colS            As Long
+    Dim colAL           As Long
+    Dim colAJ           As Long
+    Dim colD            As Long
+    Dim colE            As Long
+
+    Dim steepRows()     As Long
+    Dim steepCount      As Long
+    Dim removedNext     As Long
+    Dim removedAppend   As Long
+    Dim cutStart        As Long
+
+    Dim srcRange        As Range
+    Dim pc              As PivotCache
+    Dim pt              As PivotTable
+
+    ' ---- Capture active sheet AND its parent workbook ----
+    ' Using ws.Parent (not ThisWorkbook) so new sheets always land
+    ' in the same workbook as the data, regardless of where the
+    ' macro code lives (Personal Macro Workbook, add-in, etc.)
+    Set ws = ActiveSheet
+    Set wb = ws.Parent
+
+    Application.ScreenUpdating = False
+    Application.Calculation    = xlCalculationManual
+    Application.DisplayAlerts  = False
+
+    On Error GoTo ErrorHandler
+
+    ' ============================================================
+    ' STEP 1 – Delete rows 1 and 2
+    ' ============================================================
+    ws.Rows("1:2").Delete Shift:=xlUp
+
+    ' ============================================================
+    ' STEPS 2-9 – Column groupings
+    ' ============================================================
+    ws.Columns("F:G").Group      ' Step 2   : Issuer, Underlying Asset Class
+    ws.Columns("I:K").Group      ' Step 3/4.5: Underlying, [mid col], Issue Date
+    ws.Columns("M:R").Group      ' Step 4   : Determination Date → Initial Strike
+    ws.Columns("T:X").Group      ' Step 5   : Hyp. Redemption Value → Objective
+    ws.Columns("Z:AD").Group     ' Step 6   : Min Payment → Buffer %
+    ws.Columns("AH:AI").Group    ' Step 7   : Underwriter, Term
+    ws.Columns("AM:AM").Group    ' Step 8   : Barrier Percentage
+    ws.Columns("AO:AT").Group    ' Step 9   : State → Sub Type
+
+    ' COLLAPSE all groups now (ShowLevels 1 = all groups folded)
+    ws.Outline.ShowLevels ColumnLevels:=1
+
+    ' ============================================================
+    ' STEP 10 – AutoFilter on header row
+    ' ============================================================
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+    ws.Rows(1).AutoFilter
+
+    ' ============================================================
+    ' SETUP – Locate key columns by header name
+    '         Defaults cover the standard column layout; dynamic
+    '         lookup handles any layout variations.
+    ' ============================================================
+    colS   = 19    ' S  – Underlying Performance
+    colAL  = 38    ' AL – Current Price Performance
+    colAJ  = 36    ' AJ – Issue Price
+    colD   = 4     ' D  – Market Value ($)
+    colE   = 5     ' E  – Quantity
+
+    lastRow = ws.Cells(ws.Rows.Count, "C").End(xlUp).Row
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    For i = 1 To lastCol
+        Select Case LCase(Trim(CStr(ws.Cells(1, i).Value)))
+            Case "underlying performance"    : colS  = i
+            Case "current price performance" : colAL = i
+            Case "issue price"               : colAJ = i
+            Case "market value ($)"          : colD  = i
+            Case "quantity"                  : colE  = i
+        End Select
+    Next i
+
+    ' ============================================================
+    ' SETUP – Create "Removed From Report" sheet in the SAME
+    '         workbook as the data (wb = ws.Parent)
+    ' ============================================================
+    Set removedWs = GetOrCreateSheet(wb, "Removed From Report", ws)
+
+    ' Expand groups temporarily so the full header row is copied
+    ws.Outline.ShowLevels ColumnLevels:=8
+
+    ' Copy header row to Removed sheet (values + formats, no formulas)
+    ws.Rows(1).Copy
+    With removedWs.Rows(1)
+        .PasteSpecial Paste:=xlPasteValues
+        .PasteSpecial Paste:=xlPasteFormats
+    End With
+    Application.CutCopyMode = False
+
+    ' Collapse groups again after the header copy
+    ws.Outline.ShowLevels ColumnLevels:=1
+
+    ' ============================================================
+    ' STEP 12 – Replace "-" with "Equity" in column G
+    ' ============================================================
+    lastRow = ws.Cells(ws.Rows.Count, "C").End(xlUp).Row
+
+    For Each gCell In ws.Range("G2:G" & lastRow)
+        If Trim(CStr(gCell.Value)) = "-" Then
+            gCell.Value = "Equity"
+        End If
+    Next gCell
+
+    ' ============================================================
+    ' STEP 16 – Convert columns S and AL from text to numbers
+    '           and format as percentage.
+    '           Done BEFORE steps 13 and 15 so numeric comparisons
+    '           (e.g. < 0.20) work correctly.
+    ' ============================================================
+
+    ' Conversion logic:
+    '   "15.3%"  → strip % → 15.3  → > 1 so divide by 100 → 0.153
+    '   "0.153"  → no %  → 0.153  → ≤ 1 so keep as-is → 0.153
+    '   "-" or "" → skip (handled in step 13)
+
+    ' -- Column S (Underlying Performance) --
+    For i = 2 To lastRow
+        cellStr = Trim(CStr(ws.Cells(i, colS).Value))
+        If cellStr <> "" And cellStr <> "-" Then
+            cellStr = Replace(cellStr, "%", "")
+            On Error Resume Next
+            dblVal = CDbl(cellStr)
+            If Err.Number = 0 Then
+                If Abs(dblVal) > 1 Then dblVal = dblVal / 100
+                ws.Cells(i, colS).Value        = dblVal
+                ws.Cells(i, colS).NumberFormat = "0.00%"
+            End If
+            Err.Clear
+            On Error GoTo ErrorHandler
+        End If
+    Next i
+
+    ' -- Column AL (Current Price Performance) --
+    For i = 2 To lastRow
+        cellStr = Trim(CStr(ws.Cells(i, colAL).Value))
+        If cellStr <> "" And cellStr <> "-" Then
+            cellStr = Replace(cellStr, "%", "")
+            On Error Resume Next
+            dblVal = CDbl(cellStr)
+            If Err.Number = 0 Then
+                If Abs(dblVal) > 1 Then dblVal = dblVal / 100
+                ws.Cells(i, colAL).Value        = dblVal
+                ws.Cells(i, colAL).NumberFormat = "0.00%"
+            End If
+            Err.Clear
+            On Error GoTo ErrorHandler
+        End If
+    Next i
+
+    ' ============================================================
+    ' STEP 13 – For any cell in column AL that is blank OR "-",
+    '           fill with Market Value / Quantity - 1 and format as %.
+    ' ============================================================
+    For i = 2 To lastRow
+        alVal = Trim(CStr(ws.Cells(i, colAL).Value))
+        If alVal = "-" Or alVal = "" Then
+            On Error Resume Next
+            mktVal = CDbl(ws.Cells(i, colD).Value)
+            qty    = CDbl(ws.Cells(i, colE).Value)
+            If Err.Number = 0 And qty <> 0 Then
+                ws.Cells(i, colAL).Value        = (mktVal / qty) - 1
+                ws.Cells(i, colAL).NumberFormat = "0.00%"
+            End If
+            Err.Clear
+            On Error GoTo ErrorHandler
+        End If
+    Next i
+
+    ' ============================================================
+    ' STEP 11 – Move rows that contain "Steepener" (col C) to
+    '           the Removed sheet.
+    '           Expand groups first so every column is captured.
+    ' ============================================================
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+
+    lastRow = ws.Cells(ws.Rows.Count, "C").End(xlUp).Row
+
+    ' Collect row numbers (top-down)
+    ReDim steepRows(1 To lastRow)
+    steepCount = 0
+
+    For i = 2 To lastRow
+        If InStr(1, CStr(ws.Cells(i, 3).Value), "Steepener", vbTextCompare) > 0 Then
+            steepCount = steepCount + 1
+            steepRows(steepCount) = i
+        End If
+    Next i
+
+    If steepCount > 0 Then
+        ws.Outline.ShowLevels ColumnLevels:=8   ' expand before copy
+
+        removedNext = removedWs.Cells(removedWs.Rows.Count, "A").End(xlUp).Row + 1
+        If removedNext < 2 Then removedNext = 2
+
+        ' Copy rows to Removed sheet in order
+        For i = 1 To steepCount
+            ws.Rows(steepRows(i)).Copy
+            With removedWs.Rows(removedNext)
+                .PasteSpecial Paste:=xlPasteValues
+                .PasteSpecial Paste:=xlPasteFormats
+            End With
+            removedNext = removedNext + 1
+        Next i
+        Application.CutCopyMode = False
+
+        ' Delete from main sheet bottom-up (preserves row indices)
+        For i = steepCount To 1 Step -1
+            ws.Rows(steepRows(i)).Delete Shift:=xlUp
+        Next i
+
+        ws.Outline.ShowLevels ColumnLevels:=1   ' re-collapse
+    End If
+
+    ' ============================================================
+    ' STEP 14 – Sort by Current Price Performance (desc),
+    '           then filter Issue Price to exclude blanks.
+    ' ============================================================
+    lastRow = ws.Cells(ws.Rows.Count, "C").End(xlUp).Row
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    ' Sort entire data range descending on Current Price Performance
+    ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol)).Sort _
+        Key1:=ws.Cells(1, colAL), _
+        Order1:=xlDescending, _
+        Header:=xlYes, _
+        MatchCase:=False, _
+        Orientation:=xlTopToBottom
+
+    ' Apply AutoFilter; filter Issue Price column to non-blanks
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+    ws.Rows(1).AutoFilter
+    ws.AutoFilter.Range.AutoFilter Field:=colAJ, Criteria1:="<>"
+
+    ' ============================================================
+    ' STEP 15 – Find first row where Current Price Performance
+    '           < 20% and cut it + everything below to Removed.
+    '           Turn filter off first so row indices are clean.
+    ' ============================================================
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+
+    lastRow  = ws.Cells(ws.Rows.Count, "C").End(xlUp).Row
+    cutStart = 0
+
+    For i = 2 To lastRow
+        perfVal = ws.Cells(i, colAL).Value
+        If IsNumeric(perfVal) Then
+            If CDbl(perfVal) < 0.2 Then
+                cutStart = i
+                Exit For
+            End If
+        End If
+    Next i
+
+    If cutStart > 0 Then
+        ws.Outline.ShowLevels ColumnLevels:=8   ' expand before copy
+
+        removedAppend = removedWs.Cells(removedWs.Rows.Count, "A").End(xlUp).Row + 1
+        If removedAppend < 2 Then removedAppend = 2
+
+        ws.Rows(cutStart & ":" & lastRow).Copy
+        With removedWs.Rows(removedAppend)
+            .PasteSpecial Paste:=xlPasteValues
+            .PasteSpecial Paste:=xlPasteFormats
+        End With
+        Application.CutCopyMode = False
+
+        ws.Rows(cutStart & ":" & lastRow).Delete Shift:=xlUp
+
+        ws.Outline.ShowLevels ColumnLevels:=1   ' re-collapse
+    End If
+
+    ' Restore Issue Price filter on main sheet
+    lastRow = ws.Cells(ws.Rows.Count, "C").End(xlUp).Row
+    ws.Rows(1).AutoFilter
+    ws.AutoFilter.Range.AutoFilter Field:=colAJ, Criteria1:="<>"
+
+    ' ============================================================
+    ' PIVOT TABLE – new sheet in the same workbook (wb = ws.Parent)
+    ' ============================================================
+
+    ' Turn off filter so pivot source covers ALL remaining rows
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+
+    lastRow = ws.Cells(ws.Rows.Count, "C").End(xlUp).Row
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    Set pivotWs = GetOrCreateSheet(wb, "Pivot Table", removedWs)
+
+    Set srcRange = ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol))
+
+    Set pc = wb.PivotCaches.Create( _
+        SourceType:=xlDatabase, _
+        SourceData:=srcRange)
+
+    Set pt = pc.CreatePivotTable( _
+        TableDestination:=pivotWs.Range("A3"), _
+        TableName:="StructuredProductPivot")
+
+    With pt
+        ' Row field
+        With .PivotFields("Description")
+            .Orientation = xlRowField
+            .Position    = 1
+        End With
+
+        ' Value 1 – Sum of Market Value ($), formatted with commas
+        With .PivotFields("Market Value ($)")
+            .Orientation  = xlDataField
+            .Function     = xlSum
+            .Name         = "Sum of Market Value ($)"
+            .NumberFormat = "#,##0.00"
+        End With
+
+        ' Value 2 – Average of Pricing Date, formatted as short date
+        With .PivotFields("Pricing Date")
+            .Orientation  = xlDataField
+            .Function     = xlAverage
+            .Name         = "Average of Pricing Date"
+            .NumberFormat = "m/d/yyyy"
+        End With
+
+        ' Value 3 – Average of Underlying Performance, formatted as %
+        With .PivotFields("Underlying Performance")
+            .Orientation  = xlDataField
+            .Function     = xlAverage
+            .Name         = "Average of Underlying Performance"
+            .NumberFormat = "0.00%"
+        End With
+
+        ' Value 4 – Average of Current Price Performance, formatted as %
+        With .PivotFields("Current Price Performance")
+            .Orientation  = xlDataField
+            .Function     = xlAverage
+            .Name         = "Average of Current Price Performance"
+            .NumberFormat = "0.00%"
+        End With
+
+        .ColumnGrand = True
+        .RowGrand    = True
+
+        ' Sort Description (rows) by Sum of Market Value ($) largest to smallest
+        With .PivotFields("Description")
+            .AutoSort Order:=xlDescending, _
+                      Field:="Sum of Market Value ($)"
+        End With
+    End With
+
+    ' ============================================================
+    ' DONE
+    ' ============================================================
+    Application.ScreenUpdating = True
+    Application.Calculation    = xlCalculationAutomatic
+    Application.DisplayAlerts  = True
+
+    MsgBox "StructuredProductMacro completed successfully!" & vbCrLf & vbCrLf & _
+           "Workbook:  " & wb.Name & vbCrLf & _
+           "Data sheet: " & ws.Name & vbCrLf & vbCrLf & _
+           "Steps completed:" & vbCrLf & _
+           "  [1]  Rows 1-2 deleted" & vbCrLf & _
+           "  [2-9] Column groups applied & collapsed" & vbCrLf & _
+           "  [10]  AutoFilter on header row" & vbCrLf & _
+           "  [11]  Steepener rows moved to 'Removed From Report'" & vbCrLf & _
+           "  [12]  Column G: '-' replaced with 'Equity'" & vbCrLf & _
+           "  [13]  Column AL: '-' filled with D/E-1" & vbCrLf & _
+           "  [14]  Sorted by Current Price Performance (desc)" & vbCrLf & _
+           "  [15]  Rows < 20% CPP moved to 'Removed From Report'" & vbCrLf & _
+           "  [16]  Columns S & AL converted to numeric percentages" & vbCrLf & _
+           "  [PT]  Pivot Table created in 'Pivot Table' tab", _
+           vbInformation, "Structured Product Macro"
+
+    Exit Sub
+
+' ---- Error handler ----
+ErrorHandler:
+    Application.ScreenUpdating = True
+    Application.Calculation    = xlCalculationAutomatic
+    Application.DisplayAlerts  = True
+    MsgBox "ERROR " & Err.Number & " – " & Err.Description & vbCrLf & vbCrLf & _
+           "Common causes:" & vbCrLf & _
+           "  • A column header name doesn't match exactly" & vbCrLf & _
+           "    (check Description / Market Value ($) / Pricing Date /" & vbCrLf & _
+           "     Underlying Performance / Current Price Performance)" & vbCrLf & _
+           "  • The workbook structure is password-protected" & vbCrLf & _
+           "  • The data sheet was not the active tab when you ran the macro", _
+           vbCritical, "Structured Product Macro – Error"
+
+End Sub
