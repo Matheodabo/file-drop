@@ -7,36 +7,6 @@ Option Explicit
 '  Run AFTER ZelterMonthlyReportMacro has completed.
 '  Requires "Deposits" and "Withdrawals" tabs to exist in wb.
 '
-'  CLEANING RULES (Description column, based on Activity + Institution):
-'
-'  "Funds Transferred"   3 lines  -> merge line1 + " " + line2, drop line3
-'  "Check"                        -> keep line 1 only
-'  "Automated Payment"   2 lines  -> keep line 1
-'                        3 lines  -> keep line 3
-'  "Funds Paid"          1 line   -> keep as-is
-'                        2+ lines -> keep line 2, strip first 5 chars
-'  "Debit Card"                   -> keep line 1 only
-'  "Withdrawal"          1 line   -> keep as-is
-'                        2 lines, line1 starts "Zelle" -> merge line1 + " " + line2
-'                        2 lines, line1 NOT "Zelle"    -> keep line 2 only
-'  "DEP"                 2 lines, line1 starts "Online" -> keep line 1
-'                        1 line   -> keep as-is
-'  "DEPOSIT"             Institution = "Bank of America"
-'                        3 lines  -> strip first 6 chars of line2,
-'                                    drop line3, merge line1 + " " + line2
-'  "Direct Deposit"      Institution = "Morgan Stanley"
-'                        3 lines  -> drop line1, merge line2 + " " + line3
-'  "Online Transfer"     Institution = "Morgan Stanley"
-'                        3 lines  -> keep line 2 only
-'  "Zelle Payment"       Institution = "Morgan Stanley"
-'                        2 lines  -> keep line 1 only
-'  "Funds Received"      3 lines  -> keep line 3 only
-'
-'  POST-CLEANING (both CLEAN tabs):
-'  - WrapText disabled + rows AutoFit
-'  - Summary box: accounts + Total row centered/middle-aligned,
-'                 no decimal places, "Total($)" relabelled "Total"
-'
 ' ================================================================
 Sub ZelterMonthlyReportCleanerMacro()
 
@@ -103,7 +73,7 @@ Sub ZelterMonthlyReportCleanerMacro()
     wsWdwClean.Name = "Withdrawals CLEAN"
 
     ' ============================================================
-    ' STEP 4 - Clean descriptions on both CLEAN tabs
+    ' STEP 4 - Clean descriptions
     ' ============================================================
     Call CleanDescriptions(wsDepClean)
     Call CleanDescriptions(wsWdwClean)
@@ -115,7 +85,7 @@ Sub ZelterMonthlyReportCleanerMacro()
     Call NormaliseRowHeights(wsWdwClean)
 
     ' ============================================================
-    ' STEP 6 - Format summary boxes on both CLEAN tabs
+    ' STEP 6 - Format summary boxes
     ' ============================================================
     Call FormatSummaryBox(wsDepClean)
     Call FormatSummaryBox(wsWdwClean)
@@ -123,13 +93,9 @@ Sub ZelterMonthlyReportCleanerMacro()
     Application.ScreenUpdating = True
     Application.Calculation = xlCalculationAutomatic
 
-    ' ============================================================
-    ' FINAL MESSAGE
-    ' ============================================================
     MsgBox "Cheers Beast," & vbCrLf & vbCrLf & _
            "Please check discarded Cash Transfers net to 0, " & _
            "and check any of their kept descriptions.", vbInformation
-
     Exit Sub
 
 ErrorHandler:
@@ -359,47 +325,45 @@ End Sub
 
 ' ================================================================
 '  HELPER : NormaliseRowHeights
-'
-'  Disables WrapText then AutoFits all rows - equivalent of
-'  double-clicking every row border in the sheet.
 ' ================================================================
 Private Sub NormaliseRowHeights(ws As Worksheet)
-
     ws.UsedRange.WrapText = False
     ws.UsedRange.EntireRow.AutoFit
-
 End Sub
 
 
 ' ================================================================
 '  HELPER : FormatSummaryBox
 '
-'  Locates the summary box that AddSummaryTable wrote (identified
-'  by the bold "Account" header below the data) and applies:
-'    - Horizontal center + vertical middle alignment on all cells
-'    - "Total($)" label changed to "Total"
-'    - Number format with zero decimal places on amount column
+'  FIX: previously used ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+'  to find rLast, which stops at the last row of column 1 data.
+'  The summary box lives in cLast-1 and cLast (different columns),
+'  several rows below the last column-1 entry, so the scan never
+'  reached it.
+'
+'  Fix: derive rLastLeft from the summary column (leftCol) itself
+'  so the scan correctly covers the full extent of that column.
 ' ================================================================
 Private Sub FormatSummaryBox(ws As Worksheet)
 
-    Dim rLast As Long
     Dim cLast As Long
-    rLast = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
     cLast = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
-    If rLast < 2 Or cLast < 2 Then Exit Sub
+    If cLast < 2 Then Exit Sub
 
-    ' The summary box sits in the two rightmost columns
     Dim leftCol  As Long
     Dim rightCol As Long
     leftCol  = cLast - 1
     rightCol = cLast
 
-    ' Scan below the last data row for the "Account" header cell
-    ' that marks the top of the summary box
+    ' Scan from the bottom of the LEFT SUMMARY COLUMN (not col 1)
+    ' upward to find the bold "Account" header of the summary box
+    Dim rLastLeft As Long
+    rLastLeft = ws.Cells(ws.Rows.Count, leftCol).End(xlUp).Row
+
     Dim summaryHeaderRow As Long
     summaryHeaderRow = 0
     Dim r As Long
-    For r = rLast To 1 Step -1
+    For r = rLastLeft To 1 Step -1
         If Trim(CStr(ws.Cells(r, leftCol).Value)) = "Account" And _
            ws.Cells(r, leftCol).Font.Bold = True Then
             summaryHeaderRow = r
@@ -409,7 +373,7 @@ Private Sub FormatSummaryBox(ws As Worksheet)
 
     If summaryHeaderRow = 0 Then Exit Sub   ' no summary box found
 
-    ' Find the last row of the summary box (Total row is the last bold row)
+    ' Walk down to find the last row of the summary box
     Dim summaryLastRow As Long
     summaryLastRow = summaryHeaderRow
     For r = summaryHeaderRow + 1 To summaryHeaderRow + 200
@@ -420,22 +384,22 @@ Private Sub FormatSummaryBox(ws As Worksheet)
         summaryLastRow = r
     Next r
 
-    ' Define the full summary range
+    ' Full summary range
     Dim sumRng As Range
     Set sumRng = ws.Range(ws.Cells(summaryHeaderRow, leftCol), _
                           ws.Cells(summaryLastRow, rightCol))
 
-    ' --- Center horizontally + middle vertically ---
+    ' Center horizontally + middle vertically on all cells
     sumRng.HorizontalAlignment = xlCenter
     sumRng.VerticalAlignment   = xlVAlignCenter
 
-    ' --- Zero decimal places on the amount (right) column ---
+    ' Zero decimal places on the amount column (skip header row)
     Dim amtRng As Range
     Set amtRng = ws.Range(ws.Cells(summaryHeaderRow + 1, rightCol), _
                           ws.Cells(summaryLastRow, rightCol))
     amtRng.NumberFormat = "#,##0"
 
-    ' --- Rename "Total($)" -> "Total" wherever it appears in the left column ---
+    ' Rename "Total($)" -> "Total" in the left column
     For r = summaryHeaderRow To summaryLastRow
         If Trim(CStr(ws.Cells(r, leftCol).Value)) = "Total($)" Then
             ws.Cells(r, leftCol).Value = "Total"
