@@ -5,18 +5,19 @@ Option Explicit
 '
 '  1. Confirms layout, then strips the 5 rows above the real
 '     header row (row 6, which must read "Contact")
-'  2. Inserts a "Keep/Remove" column next to "Account Type",
+'  2. Deletes the disclaimer block below the data outright:
+'     scans column B (Account Number) for the first empty
+'     cell, then deletes that row and everything below it -
+'     done first, before anything else touches the sheet
+'  3. Inserts a "Keep/Remove" column next to "Account Type",
 '     pushing "Asset Allocation - Alternatives ($)" from G to H
-'  3. Classifies every account type with a hard-coded formula
+'  4. Classifies every account type with a hard-coded formula
 '     (no guessing) - blank Account Type is auto-REMOVE - and
 '     HALTS if anything unrecognized shows up
-'  4. Sorts so REMOVE rows group together, then moves them onto a
+'  5. Sorts so REMOVE rows group together, then moves them onto a
 '     "Removed from Report" tab instead of deleting them, so
 '     nothing is ever permanently lost and everything can be
 '     traced back if a number looks wrong
-'  5. Deletes the trailing disclaimer block outright: everything
-'     from the first fully blank row (checked across the whole
-'     row) down to the end of the sheet
 '
 '  Run this with the report open as the ActiveWorkbook and the
 '  report tab as its ActiveSheet.
@@ -29,8 +30,6 @@ Sub FeeGrailMacro()
     Dim removeSheet As Worksheet
     Dim lastRow As Long, lastCol As Long, finalLastRow As Long
     Dim i As Long, destRow As Long
-    Dim blankRow As Long, lastUsedRow As Long, searchRow As Long
-    Dim foundCell As Range
     Dim removeCount As Long
     Dim keepList As Variant, removeList As Variant
     Dim keepClause As String, removeClause As String, formulaText As String
@@ -69,10 +68,44 @@ Sub FeeGrailMacro()
     ws.Rows("1:5").Delete
 
     '----------------------------------------------------------
-    ' STEP 2 - Insert "Keep/Remove" as new column G, pushing the
+    ' STEP 2 - Remove the disclaimer block below the data now,
+    ' before anything else touches the sheet. Scan column B
+    ' (Account Number) for the first empty cell, then delete
+    ' that row and every row below it outright. Doing this
+    ' first - before the Keep/Remove column, the sort, or any
+    ' cut/paste - means those rows (and any merged cells inside
+    ' them) are gone before any operation that could trip on
+    ' them.
+    '----------------------------------------------------------
+    currentStep = "Step 2 (removing the disclaimer block below the data)"
+    Dim emptyAcctRow As Long
+    Dim foundCell As Range, lastUsedRow As Long
+
+    Set foundCell = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), _
+        LookIn:=xlValues, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
+    If Not foundCell Is Nothing Then
+        lastUsedRow = foundCell.Row
+    Else
+        lastUsedRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    End If
+
+    emptyAcctRow = 0
+    For i = 2 To lastUsedRow
+        If Trim(ws.Cells(i, "B").Value) = "" Then
+            emptyAcctRow = i
+            Exit For
+        End If
+    Next i
+
+    If emptyAcctRow > 0 Then
+        ws.Rows(emptyAcctRow & ":" & lastUsedRow).Delete
+    End If
+
+    '----------------------------------------------------------
+    ' STEP 3 - Insert "Keep/Remove" as new column G, pushing the
     ' old column G ("Asset Allocation - Alternatives ($)") to H
     '----------------------------------------------------------
-    currentStep = "Step 2 (inserting the Keep/Remove column)"
+    currentStep = "Step 3 (inserting the Keep/Remove column)"
     If StrComp(Trim(ws.Range("F1").Value), "Account Type", vbTextCompare) <> 0 Then
         MsgBox "Expected cell F1 to read 'Account Type' but found '" & ws.Range("F1").Value & _
                "'. Macro stopped - please check the sheet layout before re-running.", _
@@ -92,10 +125,10 @@ Sub FeeGrailMacro()
     End If
 
     '----------------------------------------------------------
-    ' STEP 3 - Build the KEEP / REMOVE formula from the two
+    ' STEP 4 - Build the KEEP / REMOVE formula from the two
     ' hard-coded lists below and fill it down column G
     '----------------------------------------------------------
-    currentStep = "Step 3 (building/filling the Keep-Remove formula)"
+    currentStep = "Step 4 (building/filling the Keep-Remove formula)"
     keepList = Array( _
         "Portfolio Management", _
         "Alternative Investments Advisory", _
@@ -138,10 +171,10 @@ Sub FeeGrailMacro()
     ws.Range("G2:G" & lastRow).Value = ws.Range("G2:G" & lastRow).Value
 
     '----------------------------------------------------------
-    ' STEP 4 - Safety check: stop cold if any account type did
+    ' STEP 5 - Safety check: stop cold if any account type did
     ' not match either list. Nothing gets sorted or moved yet.
     '----------------------------------------------------------
-    currentStep = "Step 4 (scanning for unrecognized Account Types)"
+    currentStep = "Step 5 (scanning for unrecognized Account Types)"
     flagFound = False
     flagValues = ""
     For i = 2 To lastRow
@@ -159,24 +192,62 @@ Sub FeeGrailMacro()
     End If
 
     '----------------------------------------------------------
-    ' STEP 5 - Sort Z-to-A on Keep/Remove so REMOVE rows land
+    ' STEP 6 - Sort Z-to-A on Keep/Remove so REMOVE rows land
     ' together right under the header
     '----------------------------------------------------------
-    currentStep = "Step 5 (sorting by Keep/Remove)"
+    currentStep = "Step 6 (sorting by Keep/Remove)"
+
+    Dim sortRange As Range
+    Set sortRange = ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol))
+
+    ' Excel's Sort requires every merged cell in the range to be the same
+    ' size, and errors out (rather than just skipping) if even one cell in
+    ' the range is merged differently from the rest. Scan the exact range
+    ' we're about to sort so we can name the row(s) involved instead of
+    ' guessing, then try a targeted unmerge scoped to just this range.
+    Dim mergedRowsFound As String
+    Dim r As Long, c As Long
+    mergedRowsFound = ""
+    For r = 1 To lastRow
+        For c = 1 To lastCol
+            If ws.Cells(r, c).MergeCells Then
+                mergedRowsFound = mergedRowsFound & "- Row " & r & vbNewLine
+                Exit For
+            End If
+        Next c
+    Next r
+
+    If Len(mergedRowsFound) > 0 Then
+        On Error Resume Next
+        Err.Clear
+        sortRange.UnMerge
+        If Err.Number <> 0 Then
+            Err.Clear
+            On Error GoTo ErrHandler
+            MsgBox "Found merged cell(s) on the following row(s) within the data being sorted, " & _
+                   "and an automatic unmerge attempt on them also failed:" & vbNewLine & vbNewLine & _
+                   mergedRowsFound & vbNewLine & _
+                   "Please open that row, unmerge those cells manually (Home tab > Merge & Center), " & _
+                   "and re-run the macro.", vbCritical, "Fee Grail Macro - Merged Cells Found"
+            GoTo CleanExit
+        End If
+        On Error GoTo ErrHandler
+    End If
+
     With ws.Sort
         .SortFields.Clear
         .SortFields.Add Key:=ws.Range("G2:G" & lastRow), SortOn:=xlSortOnValues, Order:=xlDescending
-        .SetRange ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol))
+        .SetRange sortRange
         .Header = xlYes
         .Apply
     End With
 
     '----------------------------------------------------------
-    ' STEP 6 - Move REMOVE rows (plus one header row) to the
+    ' STEP 7 - Move REMOVE rows (plus one header row) to the
     ' "Removed from Report" tab, creating it if needed. Rows are
     ' CUT (moved), never deleted outright.
     '----------------------------------------------------------
-    currentStep = "Step 6 (moving REMOVE rows to the tracking tab)"
+    currentStep = "Step 7 (moving REMOVE rows to the tracking tab)"
     removeCount = Application.WorksheetFunction.CountIf(ws.Range("G2:G" & lastRow), "REMOVE")
 
     On Error Resume Next
@@ -214,36 +285,6 @@ Sub FeeGrailMacro()
     End If
 
     removeSheet.Columns.AutoFit
-
-    '----------------------------------------------------------
-    ' STEP 7 - Delete everything from the first fully blank row
-    ' (every cell in that row is empty, checked across the
-    ' whole row - not just one column) through the end of the
-    ' sheet. This is the disclaimer/boilerplate block below the
-    ' real data, and it's safe to remove outright rather than
-    ' move to the tracking tab.
-    '----------------------------------------------------------
-    currentStep = "Step 7 (removing the trailing blank row and disclaimer text)"
-
-    Set foundCell = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), _
-        LookIn:=xlValues, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
-    If Not foundCell Is Nothing Then
-        lastUsedRow = foundCell.Row
-    Else
-        lastUsedRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
-    End If
-
-    blankRow = 0
-    For searchRow = 2 To lastUsedRow
-        If Application.WorksheetFunction.CountA(ws.Rows(searchRow)) = 0 Then
-            blankRow = searchRow
-            Exit For
-        End If
-    Next searchRow
-
-    If blankRow > 0 Then
-        ws.Rows(blankRow & ":" & lastUsedRow).Delete
-    End If
 
     ' Re-apply the filter dropdowns on the working tab now that the
     ' column layout and row count have both changed. This is cosmetic,
