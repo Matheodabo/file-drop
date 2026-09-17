@@ -31,6 +31,7 @@ Sub FeeGrailMacro()
     Dim keepList As Variant, removeList As Variant
     Dim keepClause As String, removeClause As String, formulaText As String
     Dim flagFound As Boolean, flagValues As String
+    Dim currentStep As String
     Const REMOVED_SHEET_NAME As String = "Removed from Report"
 
     Application.ScreenUpdating = False
@@ -46,12 +47,14 @@ Sub FeeGrailMacro()
     ' operations on a range that only partially overlaps a merged
     ' cell. Clearing every merge now removes that risk for every step
     ' below - the underlying text/values are unaffected.
+    currentStep = "unmerging the sheet"
     ws.Cells.UnMerge
 
     '----------------------------------------------------------
     ' STEP 1 - Confirm layout, then delete the 5 rows above the
     ' real header row (row 6, which should read "Contact")
     '----------------------------------------------------------
+    currentStep = "Step 1 (checking layout / deleting header rows)"
     If StrComp(Trim(ws.Range("A6").Value), "Contact", vbTextCompare) <> 0 Then
         MsgBox "Expected cell A6 to read 'Contact' but found '" & ws.Range("A6").Value & _
                "'. Macro stopped - please check the sheet layout before re-running.", _
@@ -64,6 +67,7 @@ Sub FeeGrailMacro()
     ' STEP 2 - Insert "Keep/Remove" as new column G, pushing the
     ' old column G ("Asset Allocation - Alternatives ($)") to H
     '----------------------------------------------------------
+    currentStep = "Step 2 (inserting the Keep/Remove column)"
     If StrComp(Trim(ws.Range("F1").Value), "Account Type", vbTextCompare) <> 0 Then
         MsgBox "Expected cell F1 to read 'Account Type' but found '" & ws.Range("F1").Value & _
                "'. Macro stopped - please check the sheet layout before re-running.", _
@@ -86,6 +90,7 @@ Sub FeeGrailMacro()
     ' STEP 3 - Build the KEEP / REMOVE formula from the two
     ' hard-coded lists below and fill it down column G
     '----------------------------------------------------------
+    currentStep = "Step 3 (building/filling the Keep-Remove formula)"
     keepList = Array( _
         "Portfolio Management", _
         "Alternative Investments Advisory", _
@@ -129,6 +134,7 @@ Sub FeeGrailMacro()
     ' STEP 4 - Safety check: stop cold if any account type did
     ' not match either list. Nothing gets sorted or moved yet.
     '----------------------------------------------------------
+    currentStep = "Step 4 (scanning for unrecognized Account Types)"
     flagFound = False
     flagValues = ""
     For i = 2 To lastRow
@@ -149,6 +155,7 @@ Sub FeeGrailMacro()
     ' STEP 5 - Sort Z-to-A on Keep/Remove so REMOVE rows land
     ' together right under the header
     '----------------------------------------------------------
+    currentStep = "Step 5 (sorting by Keep/Remove)"
     With ws.Sort
         .SortFields.Clear
         .SortFields.Add Key:=ws.Range("G2:G" & lastRow), SortOn:=xlSortOnValues, Order:=xlDescending
@@ -162,6 +169,7 @@ Sub FeeGrailMacro()
     ' "Removed from Report" tab, creating it if needed. Rows are
     ' CUT (moved), never deleted outright.
     '----------------------------------------------------------
+    currentStep = "Step 6 (moving REMOVE rows to the tracking tab)"
     removeCount = Application.WorksheetFunction.CountIf(ws.Range("G2:G" & lastRow), "REMOVE")
 
     On Error Resume Next
@@ -191,6 +199,7 @@ Sub FeeGrailMacro()
     ' cut the next 10 rows (the disclaimer junk) onto the tail
     ' end of the "Removed from Report" tab
     '----------------------------------------------------------
+    currentStep = "Step 7 (moving the disclaimer/junk rows)"
     sheetLastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
     emptyRow = 0
     For i = 2 To sheetLastRow
@@ -217,6 +226,7 @@ Sub FeeGrailMacro()
 
     ' Re-apply the filter dropdowns on the working tab now that the
     ' column layout and row count have both changed
+    currentStep = "final step (re-applying AutoFilter)"
     finalLastRow = ws.Cells(ws.Rows.Count, "F").End(xlUp).Row
     If ws.AutoFilterMode Then ws.AutoFilterMode = False
     ws.Range(ws.Cells(1, 1), ws.Cells(finalLastRow, lastCol)).AutoFilter
@@ -232,7 +242,8 @@ CleanExit:
     Exit Sub
 
 ErrHandler:
-    MsgBox "An unexpected error occurred: " & Err.Description, vbCritical, "Fee Grail Macro - Error"
+    MsgBox "An error occurred during " & currentStep & ":" & vbNewLine & vbNewLine & _
+           "Error " & Err.Number & " - " & Err.Description, vbCritical, "Fee Grail Macro - Error"
     Resume CleanExit
 
 End Sub
